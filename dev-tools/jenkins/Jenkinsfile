@@ -102,29 +102,27 @@ EOF
             script {
                 def scanId = env.BUILD_NUMBER
                 
-                if (params.RUN_ZAP) {
-                    // Publicamos el reporte de la API en el panel lateral
-                    publishHTML(target: [
-                        reportDir: 'reports',
-                        reportFiles: "zap_api_report_${scanId}.html",
-                        reportName: "ZAP API Report",
-                        keepAll: true,
-                        alwaysLinkToLastBuild: true
-                    ])
-                    // Publicamos el reporte del Frontend en el panel lateral
-                    publishHTML(target: [
-                        reportDir: 'reports',
-                        reportFiles: "zap_frontend_report_${scanId}.html",
-                        reportName: "ZAP Frontend Report",
-                        keepAll: true,
-                        alwaysLinkToLastBuild: true
-                    ])
-                    
-                    // Archivamos ambos HTMLs en los artefactos del Build
-                    archiveArtifacts artifacts: "reports/zap_api_report_${scanId}.html, reports/zap_frontend_report_${scanId}.html", 
-                                     onlyIfSuccessful: false, 
-                                     allowEmptyArchive: true 
-                }
+                // Publicamos el reporte de la API en el panel lateral
+                publishHTML(target: [
+                    reportDir: 'reports',
+                    reportFiles: "zap_api_report_${scanId}.html",
+                    reportName: "ZAP API Report",
+                    keepAll: true,
+                    alwaysLinkToLastBuild: true
+                ])
+                // Publicamos el reporte del Frontend en el panel lateral
+                publishHTML(target: [
+                    reportDir: 'reports',
+                    reportFiles: "zap_frontend_report_${scanId}.html",
+                    reportName: "ZAP Frontend Report",
+                    keepAll: true,
+                    alwaysLinkToLastBuild: true
+                ])
+                
+                // Archivamos ambos HTMLs en los artefactos del Build
+                archiveArtifacts artifacts: "reports/zap_api_report_${scanId}.html, reports/zap_frontend_report_${scanId}.html", 
+                                 onlyIfSuccessful: false, 
+                                 allowEmptyArchive: true 
             }
             sh 'docker ps -a'
         }

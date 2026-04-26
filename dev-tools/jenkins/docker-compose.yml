@@ -12,7 +12,7 @@ services:
       - /home/fabian/vuln-app-wazuh/dev-tools/reports:/reports 
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - JAVA_OPTS=-Xmx4096m -Xms1024m -XX:+UseG1GC -XX:+ExplicitGCInvokesConcurrent -XX:+ParallelRefProcEnabled -XX:+UseStringDeduplication
+      - JAVA_OPTS=-Xmx1536m -Xms512m -XX:+UseG1GC -XX:+ExplicitGCInvokesConcurrent -XX:+ParallelRefProcEnabled -XX:+UseStringDeduplication
     networks:
       - jenkins-network
       - sonar-network
