@@ -17,6 +17,11 @@ const initialZoomForPeriod = period => {
   return 0
 }
 
+const validMs = value => {
+  const ms = new Date(value).getTime()
+  return Number.isNaN(ms) ? null : ms
+}
+
 export default function useTimelineData({
   selectedConnection,
   selectedAgents,
@@ -38,7 +43,19 @@ export default function useTimelineData({
   const snapshotCache = ref(new Map())
 
   const computeRange = vulns => {
-    const now = new Date()
+    const latestObservedMs = vulns.reduce((latest, vuln) => {
+      const candidates = [
+        validMs(vuln.first_seen),
+        validMs(vuln.last_seen),
+        ...((vuln.history || []).map(item => validMs(item.timestamp)))
+      ].filter(ms => ms !== null)
+
+      if (!candidates.length) return latest
+      return Math.max(latest, ...candidates)
+    }, 0)
+
+    const anchorDate = latestObservedMs ? new Date(latestObservedMs) : new Date()
+    const now = anchorDate
     let start = new Date(0)
     let end = now
 
@@ -58,6 +75,9 @@ export default function useTimelineData({
         .sort((a, b) => a - b)[0]
       if (earliest) {
         start = new Date(earliest)
+      }
+      if (latestObservedMs) {
+        end = new Date(latestObservedMs)
       }
     }
 
