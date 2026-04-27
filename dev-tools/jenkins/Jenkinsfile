@@ -80,9 +80,66 @@ EOF
         } 
 
         stage('GATE: SonarQube Quality Gate') {
+            environment {
+                SONAR_AUTH_TOKEN = credentials('sonar-token')
+            }
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                script {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        sh '''
+                            set -eu
+
+                            report_file=".scannerwork/report-task.txt"
+                            if [ ! -f "$report_file" ]; then
+                                echo "No se encontró $report_file"
+                                exit 1
+                            fi
+
+                            ceTaskId=$(grep '^ceTaskId=' "$report_file" | cut -d= -f2-)
+                            serverUrl=$(grep '^serverUrl=' "$report_file" | cut -d= -f2-)
+
+                            if [ -z "$ceTaskId" ] || [ -z "$serverUrl" ]; then
+                                echo "No fue posible obtener ceTaskId o serverUrl desde $report_file"
+                                exit 1
+                            fi
+
+                            echo "Esperando resultado de SonarQube para task: $ceTaskId"
+
+                            elapsed=0
+                            analysisId=""
+                            while [ "$elapsed" -lt 300 ]; do
+                                response=$(curl -sf -u "$SONAR_AUTH_TOKEN:" "$serverUrl/api/ce/task?id=$ceTaskId")
+                                status=$(printf '%s' "$response" | python3 -c 'import sys, json; print(json.load(sys.stdin)["task"]["status"])')
+
+                                if [ "$status" = "SUCCESS" ]; then
+                                    analysisId=$(printf '%s' "$response" | python3 -c 'import sys, json; print(json.load(sys.stdin)["task"].get("analysisId", ""))')
+                                    break
+                                fi
+
+                                if [ "$status" = "FAILED" ] || [ "$status" = "CANCELED" ]; then
+                                    echo "La tarea de SonarQube terminó con estado: $status"
+                                    exit 1
+                                fi
+
+                                echo "Estado actual de SonarQube: $status"
+                                sleep 5
+                                elapsed=$((elapsed + 5))
+                            done
+
+                            if [ -z "$analysisId" ]; then
+                                echo "SonarQube no entregó analysisId dentro del timeout"
+                                exit 1
+                            fi
+
+                            gate=$(curl -sf -u "$SONAR_AUTH_TOKEN:" "$serverUrl/api/qualitygates/project_status?analysisId=$analysisId" | python3 -c 'import sys, json; print(json.load(sys.stdin)["projectStatus"]["status"])')
+                            echo "Quality Gate: $gate"
+
+                            if [ "$gate" != "OK" ]; then
+                                echo "Quality Gate falló con estado: $gate"
+                                exit 1
+                            fi
+                        '''
+                    }
                 }
             }
         }
