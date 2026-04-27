@@ -82,6 +82,7 @@ EOF
         stage('GATE: SonarQube Quality Gate') {
             environment {
                 SONAR_AUTH_TOKEN = credentials('sonar-token')
+                SONAR_GATE_URL = "http://sonarqube:9000"
             }
             steps {
                 script {
@@ -96,10 +97,10 @@ EOF
                             fi
 
                             ceTaskId=$(grep '^ceTaskId=' "$report_file" | cut -d= -f2-)
-                            serverUrl=$(grep '^serverUrl=' "$report_file" | cut -d= -f2-)
+                            serverUrl=${SONAR_GATE_URL}
 
                             if [ -z "$ceTaskId" ] || [ -z "$serverUrl" ]; then
-                                echo "No fue posible obtener ceTaskId o serverUrl desde $report_file"
+                                echo "No fue posible obtener ceTaskId o serverUrl para el Quality Gate"
                                 exit 1
                             fi
 
