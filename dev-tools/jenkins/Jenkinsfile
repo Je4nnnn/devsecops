@@ -90,6 +90,7 @@ EOF
         stage('DAST: OWASP ZAP Dynamic Scan'){
             steps {
                 script {
+                    sh 'docker compose up -d api frontend'
                     sh 'mkdir -p reports && chmod 777 reports'
                     sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
                     sh "./dev-tools/jenkins/scripts/run_zap.sh ${env.BUILD_NUMBER}"
