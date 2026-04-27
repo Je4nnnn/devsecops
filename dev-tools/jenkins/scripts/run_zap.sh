@@ -10,8 +10,13 @@ echo "Esperando a que la API responda en http://api:8000/docs..."
 MAX_RETRIES=30
 COUNT=0
 
+probe_in_network() {
+    docker run --rm --network="$NETWORK" curlimages/curl:8.12.1 \
+        curl --output /dev/null --silent --head --fail http://api:8000/docs
+}
+
 # Solución al bucle infinito
-until curl --output /dev/null --silent --head --fail http://api:8000/docs; do
+until probe_in_network; do
     if [ ${COUNT} -eq ${MAX_RETRIES} ]; then
         echo -e "\nERROR: La API no levantó después de 60 segundos. Abortando escaneo ZAP."
         exit 1
@@ -24,9 +29,10 @@ done
 echo -e "\n¡La API está lista!"
 
 echo "Obteniendo token de acceso para escaneo autenticado..."
-RESPONSE=$(curl -s -X POST http://api:8000/auth/login \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=admin&password=admin")
+RESPONSE=$(docker run --rm --network="$NETWORK" curlimages/curl:8.12.1 \
+    curl -s -X POST http://api:8000/auth/login \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "username=admin&password=admin")
 
 TOKEN=$(echo "$RESPONSE" | python3 -c "import sys, json; 
 try:
