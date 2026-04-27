@@ -1,3 +1,5 @@
+name: vuln-app-wazuh
+
 services:
   db-api:
     image: postgres:15

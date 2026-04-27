@@ -37,6 +37,7 @@ RUN jenkins-plugin-cli --plugins \
     git \
     workflow-aggregator \
     docker-workflow \
+    sonar \
     credentials-binding \
     htmlpublisher \
     pipeline-stage-view

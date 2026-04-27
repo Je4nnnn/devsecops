@@ -1,3 +1,5 @@
+name: sonarqube
+
 services:
   db-sonar:
     image: postgres:15

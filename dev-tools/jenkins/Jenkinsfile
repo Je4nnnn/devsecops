@@ -57,19 +57,20 @@ EOF
 
         stage('SAST: SonarQube Code Analysis'){
             environment {
-                SONAR_HOST_URL = "http://sonarqube:9000"
+                SONAR_HOST_URL = "http://host.docker.internal:9000"
                 SONAR_AUTH_TOKEN = credentials('sonar-token')
             }
             steps {
                 script {
                     withSonarQubeEnv('sonarqube') {
-                        docker.image('sonarsource/sonar-scanner-cli').inside("--network=sonarqube_sonar-network --user=root") {
-                            // Quitamos $SONAR_HOST_URL y forzamos la comunicación por red interna
+                        docker.image('sonarsource/sonar-scanner-cli').inside("--network=sonarqube_sonar-network --add-host=host.docker.internal:host-gateway --user=root") {
+                            // Forzamos la comunicación al SonarQube publicado en el host para no depender
+                            // de la resolución DNS interna de Docker desde instalaciones externas de Jenkins.
                             sh '''
                             sonar-scanner \
                                 -Dproject.settings=dev-tools/sonarqube/sonar-project.properties \
                                 -Dsonar.projectBaseDir=. \
-                                -Dsonar.host.url=http://sonarqube:9000 \
+                                -Dsonar.host.url=http://host.docker.internal:9000 \
                                 -Dsonar.login=$SONAR_AUTH_TOKEN
                             '''
                         }     
@@ -101,24 +102,7 @@ EOF
         always {
             script {
                 def scanId = env.BUILD_NUMBER
-                
-                // Publicamos el reporte de la API en el panel lateral
-                publishHTML(target: [
-                    reportDir: 'reports',
-                    reportFiles: "zap_api_report_${scanId}.html",
-                    reportName: "ZAP API Report",
-                    keepAll: true,
-                    alwaysLinkToLastBuild: true
-                ])
-                // Publicamos el reporte del Frontend en el panel lateral
-                publishHTML(target: [
-                    reportDir: 'reports',
-                    reportFiles: "zap_frontend_report_${scanId}.html",
-                    reportName: "ZAP Frontend Report",
-                    keepAll: true,
-                    alwaysLinkToLastBuild: true
-                ])
-                
+
                 // Archivamos ambos HTMLs en los artefactos del Build
                 archiveArtifacts artifacts: "reports/zap_api_report_${scanId}.html, reports/zap_frontend_report_${scanId}.html", 
                                  onlyIfSuccessful: false, 
