@@ -177,10 +177,17 @@ PY
         stage('DAST: OWASP ZAP Dynamic Scan'){
             steps {
                 script {
-                    sh 'docker compose up -d api frontend'
-                    sh 'mkdir -p reports && chmod 777 reports'
-                    sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
-                    sh "./dev-tools/jenkins/scripts/run_zap.sh ${env.BUILD_NUMBER}"
+                    withEnv([
+                        'COMPOSE_PROJECT_NAME=jenkins-dast',
+                        'NETWORK=jenkins-dast_app-network',
+                        'TARGET_API=http://api:8000/openapi.json',
+                        'TARGET_FRONTEND=http://frontend:80'
+                    ]) {
+                        sh 'docker compose -f docker-compose.yml -f dev-tools/jenkins/docker-compose.dast.yml up -d db-api api frontend'
+                        sh 'mkdir -p reports && chmod 777 reports'
+                        sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
+                        sh "./dev-tools/jenkins/scripts/run_zap.sh ${env.BUILD_NUMBER}"
+                    }
                 }
             }
         }
@@ -196,6 +203,7 @@ PY
                                  onlyIfSuccessful: false, 
                                  allowEmptyArchive: true 
             }
+            sh 'COMPOSE_PROJECT_NAME=jenkins-dast docker compose -f docker-compose.yml -f dev-tools/jenkins/docker-compose.dast.yml down -v || true'
             sh 'docker ps -a'
         }
     }

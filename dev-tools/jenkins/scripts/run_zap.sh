@@ -1,8 +1,8 @@
 #!/bin/bash
 BUILD_ID=$1
-NETWORK="vuln-app-wazuh_app-network"
-TARGET_API="http://api:8000/openapi.json"
-TARGET_FRONTEND="http://frontend:80"
+NETWORK="${NETWORK:-vuln-app-wazuh_app-network}"
+TARGET_API="${TARGET_API:-http://api:8000/openapi.json}"
+TARGET_FRONTEND="${TARGET_FRONTEND:-http://frontend:80}"
 
 echo "--- Iniciando Escaneo Profundo DAST (Build $BUILD_ID) ---"
 
