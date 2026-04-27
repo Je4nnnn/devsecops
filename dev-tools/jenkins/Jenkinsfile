@@ -82,64 +82,93 @@ EOF
         stage('GATE: SonarQube Quality Gate') {
             environment {
                 SONAR_AUTH_TOKEN = credentials('sonar-token')
-                SONAR_GATE_URL = "http://sonarqube:9000"
             }
             steps {
                 script {
                     timeout(time: 5, unit: 'MINUTES') {
-                        sh '''
-                            set -eu
+                        docker.image('python:3.12-alpine').inside("--network=sonarqube_sonar-network --add-host=host.docker.internal:host-gateway --user=root") {
+                            sh '''
+                                set -eu
 
-                            report_file=".scannerwork/report-task.txt"
-                            if [ ! -f "$report_file" ]; then
-                                echo "No se encontró $report_file"
-                                exit 1
-                            fi
-
-                            ceTaskId=$(grep '^ceTaskId=' "$report_file" | cut -d= -f2-)
-                            serverUrl=${SONAR_GATE_URL}
-
-                            if [ -z "$ceTaskId" ] || [ -z "$serverUrl" ]; then
-                                echo "No fue posible obtener ceTaskId o serverUrl para el Quality Gate"
-                                exit 1
-                            fi
-
-                            echo "Esperando resultado de SonarQube para task: $ceTaskId"
-
-                            elapsed=0
-                            analysisId=""
-                            while [ "$elapsed" -lt 300 ]; do
-                                response=$(curl -sf -u "$SONAR_AUTH_TOKEN:" "$serverUrl/api/ce/task?id=$ceTaskId")
-                                status=$(printf '%s' "$response" | python3 -c 'import sys, json; print(json.load(sys.stdin)["task"]["status"])')
-
-                                if [ "$status" = "SUCCESS" ]; then
-                                    analysisId=$(printf '%s' "$response" | python3 -c 'import sys, json; print(json.load(sys.stdin)["task"].get("analysisId", ""))')
-                                    break
-                                fi
-
-                                if [ "$status" = "FAILED" ] || [ "$status" = "CANCELED" ]; then
-                                    echo "La tarea de SonarQube terminó con estado: $status"
+                                report_file=".scannerwork/report-task.txt"
+                                if [ ! -f "$report_file" ]; then
+                                    echo "No se encontró $report_file"
                                     exit 1
                                 fi
 
-                                echo "Estado actual de SonarQube: $status"
-                                sleep 5
-                                elapsed=$((elapsed + 5))
-                            done
+                                ceTaskId=$(grep '^ceTaskId=' "$report_file" | cut -d= -f2-)
+                                serverUrl="http://host.docker.internal:9000"
 
-                            if [ -z "$analysisId" ]; then
-                                echo "SonarQube no entregó analysisId dentro del timeout"
-                                exit 1
-                            fi
+                                if [ -z "$ceTaskId" ]; then
+                                    echo "No fue posible obtener ceTaskId para el Quality Gate"
+                                    exit 1
+                                fi
 
-                            gate=$(curl -sf -u "$SONAR_AUTH_TOKEN:" "$serverUrl/api/qualitygates/project_status?analysisId=$analysisId" | python3 -c 'import sys, json; print(json.load(sys.stdin)["projectStatus"]["status"])')
-                            echo "Quality Gate: $gate"
+                                echo "Esperando resultado de SonarQube para task: $ceTaskId"
 
-                            if [ "$gate" != "OK" ]; then
-                                echo "Quality Gate falló con estado: $gate"
-                                exit 1
-                            fi
-                        '''
+                                elapsed=0
+                                analysisId=""
+                                while [ "$elapsed" -lt 300 ]; do
+                                    response=$(python3 - <<PY
+import base64
+import json
+import os
+import sys
+import urllib.request
+
+url = "${serverUrl}/api/ce/task?id=${ceTaskId}"
+token = os.environ["SONAR_AUTH_TOKEN"]
+req = urllib.request.Request(url)
+req.add_header("Authorization", "Basic " + base64.b64encode(f"{token}:".encode()).decode())
+with urllib.request.urlopen(req, timeout=30) as resp:
+    sys.stdout.write(resp.read().decode())
+PY
+)
+                                    status=$(printf '%s' "$response" | python3 -c 'import sys, json; print(json.load(sys.stdin)["task"]["status"])')
+
+                                    if [ "$status" = "SUCCESS" ]; then
+                                        analysisId=$(printf '%s' "$response" | python3 -c 'import sys, json; print(json.load(sys.stdin)["task"].get("analysisId", ""))')
+                                        break
+                                    fi
+
+                                    if [ "$status" = "FAILED" ] || [ "$status" = "CANCELED" ]; then
+                                        echo "La tarea de SonarQube terminó con estado: $status"
+                                        exit 1
+                                    fi
+
+                                    echo "Estado actual de SonarQube: $status"
+                                    sleep 5
+                                    elapsed=$((elapsed + 5))
+                                done
+
+                                if [ -z "$analysisId" ]; then
+                                    echo "SonarQube no entregó analysisId dentro del timeout"
+                                    exit 1
+                                fi
+
+                                gate=$(python3 - <<PY
+import base64
+import json
+import os
+import urllib.request
+
+url = "${serverUrl}/api/qualitygates/project_status?analysisId=${analysisId}"
+token = os.environ["SONAR_AUTH_TOKEN"]
+req = urllib.request.Request(url)
+req.add_header("Authorization", "Basic " + base64.b64encode(f"{token}:".encode()).decode())
+with urllib.request.urlopen(req, timeout=30) as resp:
+    data = json.loads(resp.read().decode())
+print(data["projectStatus"]["status"])
+PY
+)
+                                echo "Quality Gate: $gate"
+
+                                if [ "$gate" != "OK" ]; then
+                                    echo "Quality Gate falló con estado: $gate"
+                                    exit 1
+                                fi
+                            '''
+                        }
                     }
                 }
             }
