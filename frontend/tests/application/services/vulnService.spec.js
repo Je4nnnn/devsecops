@@ -51,4 +51,40 @@ describe('vulnService.js', () => {
         expect(apiClient.post).toHaveBeenCalledWith('/vulns/sync-all')
         expect(result).toEqual(mockResponse)
     })
+
+    it('getEvolutionSummary calls summary endpoint', async () => {
+        const mockResponse = { data: { active_vulnerabilities: 1 } }
+        apiClient.get.mockResolvedValueOnce(mockResponse)
+
+        const result = await vulnService.getEvolutionSummary({ connection_id: 2 })
+
+        expect(apiClient.get).toHaveBeenCalledWith('/vulns/evolution/summary', {
+            params: { connection_id: 2 }
+        })
+        expect(result).toEqual(mockResponse)
+    })
+
+    it('getWeeklyTrend calls weekly evolution endpoint', async () => {
+        const mockResponse = { data: [] }
+        apiClient.get.mockResolvedValueOnce(mockResponse)
+
+        const result = await vulnService.getWeeklyTrend()
+
+        expect(apiClient.get).toHaveBeenCalledWith('/vulns/evolution/weekly', {
+            params: {}
+        })
+        expect(result).toEqual(mockResponse)
+    })
+
+    it('getTopAssets calls top assets endpoint', async () => {
+        const mockResponse = { data: [] }
+        apiClient.get.mockResolvedValueOnce(mockResponse)
+
+        const result = await vulnService.getTopAssets({ days: 7, limit: 5 })
+
+        expect(apiClient.get).toHaveBeenCalledWith('/vulns/evolution/top-assets', {
+            params: { days: 7, limit: 5 }
+        })
+        expect(result).toEqual(mockResponse)
+    })
 })

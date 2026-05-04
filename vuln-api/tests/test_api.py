@@ -1,6 +1,15 @@
 import pytest
 from unittest.mock import patch
-from app.models import User, WazuhConnection, WazuhVulnerability, VulnerabilityHistory
+from app.models import (
+    Asset,
+    Manager,
+    User,
+    VulnerabilityCatalog,
+    VulnerabilityDetection,
+    WazuhConnection,
+    WazuhVulnerability,
+    VulnerabilityHistory,
+)
 from app.auth import hash_password
 from app.crypto import encrypt
 
@@ -314,6 +323,31 @@ def test_delete_connection(client, db_session):
     assert client.delete(f"/wazuh-connections/{conn.id}", headers=_get_headers(client)).status_code == 200
 
 
+@patch("app.main.fetch_all_vulns")
+def test_delete_connection_removes_related_vulnerability_data(mock_fetch, client, db_session):
+    mock_fetch.return_value = _raw_vuln()
+    _create_user(db_session)
+    conn = _create_connection(db_session)
+    headers = _get_headers(client)
+
+    client.post(f"/wazuh-connections/{conn.id}/sync", headers=headers)
+    assert db_session.query(WazuhVulnerability).count() == 1
+    assert db_session.query(VulnerabilityHistory).count() == 1
+    assert db_session.query(Manager).count() == 1
+    assert db_session.query(Asset).count() == 1
+    assert db_session.query(VulnerabilityDetection).count() == 1
+
+    res = client.delete(f"/wazuh-connections/{conn.id}", headers=headers)
+
+    assert res.status_code == 200
+    assert db_session.query(WazuhConnection).count() == 0
+    assert db_session.query(WazuhVulnerability).count() == 0
+    assert db_session.query(VulnerabilityHistory).count() == 0
+    assert db_session.query(Manager).count() == 0
+    assert db_session.query(Asset).count() == 0
+    assert db_session.query(VulnerabilityDetection).count() == 0
+
+
 def test_delete_nonexistent_connection(client, db_session):
     _create_user(db_session)
     assert client.delete("/wazuh-connections/9999", headers=_get_headers(client)).status_code == 404
@@ -434,6 +468,43 @@ def test_new_vuln_creates_detected_history(mock_fetch, client, db_session):
     client.post(f"/wazuh-connections/{conn.id}/sync", headers=_get_headers(client))
     actions = [h.action for h in db_session.query(VulnerabilityHistory).all()]
     assert "DETECTED" in actions
+
+
+@patch("app.main.fetch_all_vulns")
+def test_sync_creates_timeseries_entities(mock_fetch, client, db_session):
+    mock_fetch.return_value = _raw_vuln()
+    _create_user(db_session)
+    conn = _create_connection(db_session)
+    client.post(f"/wazuh-connections/{conn.id}/sync", headers=_get_headers(client))
+
+    assert db_session.query(Manager).count() == 1
+    assert db_session.query(Asset).count() == 1
+    assert db_session.query(VulnerabilityCatalog).count() == 1
+
+    detection = db_session.query(VulnerabilityDetection).first()
+    assert detection is not None
+    assert detection.status == "Detected"
+    assert detection.package_name == "curl"
+
+
+@patch("app.main.fetch_all_vulns")
+def test_evolution_endpoints_return_dashboard_data(mock_fetch, client, db_session):
+    mock_fetch.return_value = _raw_vuln()
+    _create_user(db_session)
+    conn = _create_connection(db_session)
+    headers = _get_headers(client)
+    client.post(f"/wazuh-connections/{conn.id}/sync", headers=headers)
+
+    summary = client.get("/vulns/evolution/summary", headers=headers).json()
+    weekly = client.get("/vulns/evolution/weekly", headers=headers).json()
+    top_assets = client.get("/vulns/evolution/top-assets", headers=headers).json()
+
+    assert summary["active_vulnerabilities"] == 1
+    assert summary["assets"] == 1
+    assert summary["detection_events"] == 1
+    assert weekly[0]["total_vulnerabilidades"] == 1
+    assert top_assets[0]["hostname"] == "host-1"
+    assert top_assets[0]["total"] == 1
 
 
 @patch("app.main.fetch_all_vulns")

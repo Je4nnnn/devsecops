@@ -21,6 +21,58 @@
       {{ error }}
     </div>
 
+    <div v-if="evolutionSummary" class="evolution-grid">
+      <div class="metric-tile">
+        <span class="metric-label">Activas</span>
+        <strong>{{ evolutionSummary.active_vulnerabilities }}</strong>
+      </div>
+      <div class="metric-tile">
+        <span class="metric-label">Resueltas</span>
+        <strong>{{ evolutionSummary.resolved_vulnerabilities }}</strong>
+      </div>
+      <div class="metric-tile">
+        <span class="metric-label">Assets</span>
+        <strong>{{ evolutionSummary.assets }}</strong>
+      </div>
+      <div class="metric-tile">
+        <span class="metric-label">Eventos históricos</span>
+        <strong>{{ evolutionSummary.detection_events }}</strong>
+      </div>
+    </div>
+
+    <div class="evolution-panels">
+      <section class="card evolution-card">
+        <div class="panel-head">
+          <h2>Tendencia semanal</h2>
+          <span>Detected</span>
+        </div>
+        <div v-if="weeklyTrend.length" class="weekly-bars">
+          <div v-for="point in weeklyTrend" :key="point.semana" class="bar-row">
+            <span>{{ formatWeek(point.semana) }}</span>
+            <div class="bar-track">
+              <div class="bar-fill" :style="{ width: getWeeklyBarWidth(point.total_vulnerabilidades) + '%' }"></div>
+            </div>
+            <strong>{{ point.total_vulnerabilidades }}</strong>
+          </div>
+        </div>
+        <p v-else class="panel-empty">Sin eventos históricos suficientes.</p>
+      </section>
+
+      <section class="card evolution-card">
+        <div class="panel-head">
+          <h2>Top servidores</h2>
+          <span>Últimos 7 días</span>
+        </div>
+        <div v-if="topAssets.length" class="top-assets-list">
+          <div v-for="asset in topAssets" :key="asset.hostname" class="asset-row">
+            <span>{{ asset.hostname }}</span>
+            <strong>{{ asset.total }}</strong>
+          </div>
+        </div>
+        <p v-else class="panel-empty">Sin actividad reciente.</p>
+      </section>
+    </div>
+
     <!-- Filter Toggle Bar (minimalista) -->
     <div v-if="!loading && vulns.length > 0" class="filter-toggle-bar">
       <button class="btn-filter-toggle" @click="showFilters = !showFilters">
@@ -358,6 +410,9 @@ const vulns = ref([])
 const loading = ref(true)
 const syncing = ref(false)
 const error = ref('')
+const evolutionSummary = ref(null)
+const weeklyTrend = ref([])
+const topAssets = ref([])
 const sortKey = ref('last_seen')
 const sortOrder = ref('desc')
 const showFilters = ref(false)
@@ -397,6 +452,10 @@ const filteredCVEOptions = computed(() =>
 
 const filteredPackages = computed(() =>
   packageOptions.value.filter(pkg => pkg.toLowerCase().includes(search.package.toLowerCase()))
+)
+
+const maxWeeklyTotal = computed(() =>
+  weeklyTrend.value.reduce((max, point) => Math.max(max, point.total_vulnerabilidades || 0), 0)
 )
 
 const getSeverityLevel = (s) => {
@@ -592,6 +651,7 @@ const onConnectionChange = () => {
   selectedSeverities.value = []
   scoreMin.value = ''
   scoreMax.value = ''
+  fetchEvolution()
 }
 
 const clearFilters = () => {
@@ -632,12 +692,34 @@ const fetchConnections = async () => {
   }
 }
 
+const evolutionParams = () => {
+  return selectedConnection.value ? { connection_id: selectedConnection.value } : {}
+}
+
+const fetchEvolution = async () => {
+  try {
+    const params = evolutionParams()
+    const [summaryRes, weeklyRes, topRes] = await Promise.all([
+      vulnService.getEvolutionSummary(params),
+      vulnService.getWeeklyTrend(params),
+      vulnService.getTopAssets({ ...params, days: 7, limit: 5 })
+    ])
+
+    evolutionSummary.value = summaryRes?.data || null
+    weeklyTrend.value = Array.isArray(weeklyRes?.data) ? weeklyRes.data : []
+    topAssets.value = Array.isArray(topRes?.data) ? topRes.data : []
+  } catch (err) {
+    console.error('Error fetching evolution metrics:', err)
+  }
+}
+
 const syncVulns = async () => {
   syncing.value = true
   error.value = ''
   try {
     await vulnService.syncVulns()
     await fetchVulns()
+    await fetchEvolution()
   } catch (err) {
     error.value = 'Error durante la sincronización con Wazuh. Verifica tu configuración en Admin Wazuh.'
   } finally {
@@ -652,6 +734,17 @@ const formatDate = (dateString) => {
     day: '2-digit', month: 'short', year: 'numeric', 
     hour: '2-digit', minute: '2-digit' 
   })
+}
+
+const formatWeek = (dateString) => {
+  if (!dateString) return '-'
+  const d = new Date(dateString)
+  return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+}
+
+const getWeeklyBarWidth = (value) => {
+  if (!maxWeeklyTotal.value) return 0
+  return Math.max(8, Math.round((value / maxWeeklyTotal.value) * 100))
 }
 
 const isNew = (firstSeenDate) => {
@@ -727,10 +820,134 @@ const timeAgo = (date) => {
 onMounted(() => {
   fetchConnections()
   fetchVulns()
+  fetchEvolution()
 })
 </script>
 
 <style scoped>
+.evolution-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.metric-tile {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.metric-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-bottom: 0.45rem;
+}
+
+.metric-tile strong {
+  color: var(--text-main);
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.evolution-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.evolution-card {
+  min-height: 180px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-main);
+}
+
+.panel-head span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.weekly-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 42px;
+  gap: 0.75rem;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.bar-track {
+  height: 9px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.bar-row strong,
+.asset-row strong {
+  color: var(--text-main);
+  text-align: right;
+}
+
+.top-assets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.asset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 0.75rem;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.asset-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-empty {
+  color: var(--text-muted);
+  margin: 0;
+}
+
 .visual-timeline {
   display: flex;
   flex-direction: column;
@@ -1300,6 +1517,11 @@ th {
 }
 
 @media (max-width: 1100px) {
+  .evolution-grid,
+  .evolution-panels {
+    grid-template-columns: 1fr;
+  }
+
   .filter-row { 
     grid-template-columns: 1fr 1fr; 
   }

@@ -12,7 +12,7 @@ COUNT=0
 
 probe_in_network() {
     docker run --rm --network="$NETWORK" curlimages/curl:8.12.1 \
-        curl --output /dev/null --silent --head --fail http://api:8000/docs
+        --output /dev/null --silent --head --fail http://api:8000/docs
 }
 
 # Solución al bucle infinito
@@ -30,7 +30,7 @@ echo -e "\n¡La API está lista!"
 
 echo "Obteniendo token de acceso para escaneo autenticado..."
 RESPONSE=$(docker run --rm --network="$NETWORK" curlimages/curl:8.12.1 \
-    curl -s -X POST http://api:8000/auth/login \
+    -s -X POST http://api:8000/auth/login \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "username=admin&password=admin")
 
@@ -42,10 +42,12 @@ except:
     print('')
 ")
 
-AUTH_HEADER=""
+ZAP_AUTH_ARGS=()
 if [ -n "$TOKEN" ]; then
     echo "Token obtenido con éxito."
-    AUTH_HEADER="-z \"Authorization: Bearer $TOKEN\""
+    ZAP_AUTH_ARGS=(
+        -z "-config replacer.full_list(0).description=auth-header -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Authorization -config replacer.full_list(0).replacement=Bearer $TOKEN"
+    )
 fi
 
 echo "--- Fase 1: Escaneando Backend (API) ---"
@@ -58,7 +60,8 @@ docker run --rm \
     -t "$TARGET_API" \
     -f openapi \
     -r "zap_api_report_${BUILD_ID}.html" \
-    -I || echo "ZAP API finalizó" 
+    -I \
+    "${ZAP_AUTH_ARGS[@]}" || echo "ZAP API finalizó" 
     # El flag -I evita que el script falle violentamente si ZAP encuentra warnings menores
 
 echo "--- Fase 2: Escaneando Frontend (Baseline Spider) ---"

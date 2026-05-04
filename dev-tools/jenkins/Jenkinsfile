@@ -3,6 +3,7 @@ pipeline {
 
     environment {
         OWASP_URL = "http://api:8000/openapi.json"
+        SONAR_SERVER_URL = "http://sonarqube:9000"
     }
 
     options {
@@ -50,27 +51,53 @@ EOF
                         sed -i 's|SF:/app/src/|SF:frontend/src/|g' frontend/coverage/lcov.info
                         sed -i 's|SF:src/|SF:frontend/src/|g' frontend/coverage/lcov.info
                         
-                        docker compose build frontend                    '''
+                        docker compose build frontend
+                    '''
                 }
+            }
+        }
+
+        stage('SAST: Start SonarQube') {
+            steps {
+                sh '''
+                    set -eu
+
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml up -d
+
+                    echo "Esperando a que SonarQube quede disponible en ${SONAR_SERVER_URL}..."
+                    for attempt in $(seq 1 60); do
+                        if docker run --rm --network=sonarqube_sonar-network curlimages/curl:8.12.1 \
+                            -fsS "${SONAR_SERVER_URL}/api/system/status" | grep -q '"status":"UP"'; then
+                            echo "SonarQube esta listo."
+                            exit 0
+                        fi
+
+                        echo "SonarQube aun no esta listo (${attempt}/60)."
+                        sleep 5
+                    done
+
+                    echo "ERROR: SonarQube no quedo listo dentro del timeout."
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml ps || true
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml logs --tail=120 sonarqube || true
+                    exit 1
+                '''
             }
         }
 
         stage('SAST: SonarQube Code Analysis'){
             environment {
-                SONAR_HOST_URL = "http://host.docker.internal:9000"
                 SONAR_AUTH_TOKEN = credentials('sonar-token')
             }
             steps {
                 script {
                     withSonarQubeEnv('sonarqube') {
-                        docker.image('sonarsource/sonar-scanner-cli').inside("--network=sonarqube_sonar-network --add-host=host.docker.internal:host-gateway --user=root") {
-                            // Forzamos la comunicación al SonarQube publicado en el host para no depender
-                            // de la resolución DNS interna de Docker desde instalaciones externas de Jenkins.
+                        docker.image('sonarsource/sonar-scanner-cli').inside("--network=sonarqube_sonar-network --user=root") {
                             sh '''
+                            set -eu
                             sonar-scanner \
                                 -Dproject.settings=dev-tools/sonarqube/sonar-project.properties \
                                 -Dsonar.projectBaseDir=. \
-                                -Dsonar.host.url=http://host.docker.internal:9000 \
+                                -Dsonar.host.url=$SONAR_SERVER_URL \
                                 -Dsonar.login=$SONAR_AUTH_TOKEN
                             '''
                         }     
@@ -86,7 +113,7 @@ EOF
             steps {
                 script {
                     timeout(time: 5, unit: 'MINUTES') {
-                        docker.image('python:3.12-alpine').inside("--network=sonarqube_sonar-network --add-host=host.docker.internal:host-gateway --user=root") {
+                        docker.image('python:3.12-alpine').inside("--network=sonarqube_sonar-network --user=root") {
                             sh '''
                                 set -eu
 
@@ -97,7 +124,7 @@ EOF
                                 fi
 
                                 ceTaskId=$(grep '^ceTaskId=' "$report_file" | cut -d= -f2-)
-                                serverUrl="http://host.docker.internal:9000"
+                                serverUrl="$SONAR_SERVER_URL"
 
                                 if [ -z "$ceTaskId" ]; then
                                     echo "No fue posible obtener ceTaskId para el Quality Gate"
@@ -184,6 +211,7 @@ PY
                         'TARGET_FRONTEND=http://frontend:80'
                     ]) {
                         sh 'docker compose -f docker-compose.yml up -d db-api api'
+                        sh 'docker compose -f docker-compose.yml build frontend'
                         sh 'docker rm -f jenkins-dast-frontend >/dev/null 2>&1 || true'
                         sh 'docker run -d --name jenkins-dast-frontend --network jenkins-dast_app-network --network-alias frontend jenkins-dast-frontend'
                         sh 'mkdir -p reports && chmod 777 reports'

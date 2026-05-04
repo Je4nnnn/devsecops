@@ -1,6 +1,7 @@
 services:
   db-api:
-    image: postgres:15
+    image: timescale/timescaledb:latest-pg15
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
     container_name: db-api
     restart: unless-stopped
     env_file:

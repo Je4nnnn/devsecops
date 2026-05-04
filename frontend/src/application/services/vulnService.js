@@ -20,4 +20,22 @@ export default {
   syncVulns: async () => {
     return apiClient.post('/vulns/sync-all')
   },
+
+  getEvolutionSummary: async (params = {}) => {
+    return apiClient.get('/vulns/evolution/summary', {
+      params,
+    })
+  },
+
+  getWeeklyTrend: async (params = {}) => {
+    return apiClient.get('/vulns/evolution/weekly', {
+      params,
+    })
+  },
+
+  getTopAssets: async (params = {}) => {
+    return apiClient.get('/vulns/evolution/top-assets', {
+      params,
+    })
+  },
 }

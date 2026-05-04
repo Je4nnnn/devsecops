@@ -7,7 +7,10 @@ import wazuhService from '@/application/services/wazuhService'
 vi.mock('@/application/services/vulnService', () => ({
     default: {
         getVulns: vi.fn(),
-        syncVulns: vi.fn()
+        syncVulns: vi.fn(),
+        getEvolutionSummary: vi.fn(),
+        getWeeklyTrend: vi.fn(),
+        getTopAssets: vi.fn()
     }
 }))
 
@@ -47,6 +50,20 @@ describe('Dashboard.vue', () => {
         vi.clearAllMocks()
 
         wazuhService.getConnections.mockResolvedValue({ data: [] })
+        vulnService.getEvolutionSummary.mockResolvedValue({
+            data: {
+                active_vulnerabilities: 2,
+                resolved_vulnerabilities: 1,
+                assets: 2,
+                detection_events: 3
+            }
+        })
+        vulnService.getWeeklyTrend.mockResolvedValue({
+            data: [{ semana: new Date().toISOString(), total_vulnerabilidades: 2 }]
+        })
+        vulnService.getTopAssets.mockResolvedValue({
+            data: [{ hostname: 'Agent-1', total: 1 }]
+        })
     })
 
     it('renders loading state initially and then shows vulns', async () => {

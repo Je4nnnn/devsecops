@@ -1,6 +1,7 @@
 # app/main.py
 import re
 import os
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,9 +9,19 @@ from dotenv import set_key, find_dotenv
 from sqlalchemy.orm import Session
 from typing import List, Annotated, Optional
 from pydantic import BaseModel
+from sqlalchemy import text, func as sql_func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import func
 from .db import Base, engine, get_db, SessionLocal
-from .models import User, WazuhVulnerability, WazuhConnection
+from .models import (
+    Asset,
+    Manager,
+    User,
+    VulnerabilityCatalog,
+    VulnerabilityDetection,
+    WazuhVulnerability,
+    WazuhConnection,
+)
 from .auth import (
     authenticate_user,
     create_access_token,
@@ -23,6 +34,36 @@ from .wazuh_client import fetch_all_vulns, test_connection
 from .crypto import encrypt, decrypt
 
 Base.metadata.create_all(bind=engine)
+
+
+def initialize_timescale_storage():
+    if engine.dialect.name != "postgresql":
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
+            conn.execute(text("""
+                SELECT create_hypertable(
+                    'vulnerability_detections',
+                    'timestamp',
+                    if_not_exists => TRUE,
+                    migrate_data => TRUE
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_vuln_detections_asset_time
+                ON vulnerability_detections (asset_id, timestamp DESC)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_vuln_detections_cve_time
+                ON vulnerability_detections (cve_id, timestamp DESC)
+            """))
+    except SQLAlchemyError as exc:
+        print(f"TimescaleDB no disponible, se usara PostgreSQL estandar: {exc}")
+
+
+initialize_timescale_storage()
 
 CONNECTION_NOT_FOUND = "Conexión no encontrada"
 
@@ -286,9 +327,50 @@ def delete_connection(
     conn = db.query(WazuhConnection).filter(WazuhConnection.id == conn_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND)
+
+    _delete_connection_data(db, conn_id)
     db.delete(conn)
     db.commit()
     return {"message": "Conexión eliminada"}
+
+
+def _delete_connection_data(db: Session, conn_id: int) -> None:
+    vuln_ids = [
+        item.id
+        for item in db.query(WazuhVulnerability.id)
+        .filter(WazuhVulnerability.connection_id == conn_id)
+        .all()
+    ]
+
+    if vuln_ids:
+        db.query(VulnerabilityHistory).filter(
+            VulnerabilityHistory.vulnerability_id.in_(vuln_ids)
+        ).delete(synchronize_session=False)
+        db.query(WazuhVulnerability).filter(
+            WazuhVulnerability.id.in_(vuln_ids)
+        ).delete(synchronize_session=False)
+
+    managers = db.query(Manager).filter(
+        Manager.legacy_connection_id == conn_id
+    ).all()
+
+    for manager in managers:
+        asset_ids = [
+            item.id
+            for item in db.query(Asset.id)
+            .filter(Asset.manager_id == manager.id)
+            .all()
+        ]
+
+        if asset_ids:
+            db.query(VulnerabilityDetection).filter(
+                VulnerabilityDetection.asset_id.in_(asset_ids)
+            ).delete(synchronize_session=False)
+            db.query(Asset).filter(
+                Asset.id.in_(asset_ids)
+            ).delete(synchronize_session=False)
+
+        db.delete(manager)
 
 
 @app.post("/wazuh-connections/{conn_id}/test")
@@ -335,6 +417,121 @@ def sync_connection(
     return {"synced": count, "connection": conn.name}
 
 
+def _normalize_severity(value: Optional[str]) -> str:
+    if not value:
+        return "Low"
+    normalized = value.strip().lower()
+    if normalized in {"critical", "critica", "crítica"}:
+        return "Critical"
+    if normalized in {"high", "alta"}:
+        return "High"
+    if normalized in {"medium", "media"}:
+        return "Medium"
+    return "Low"
+
+
+def _score_base(vuln: dict):
+    score = (vuln.get("score") or {}).get("base")
+    if score in ("", None):
+        return None
+    return score
+
+
+def _vault_ref_for_connection(conn_id: int) -> str:
+    return f"wazuh_connection:{conn_id}:wazuh_password"
+
+
+def _get_or_create_manager(db: Session, conn: WazuhConnection) -> Manager:
+    manager = db.query(Manager).filter(Manager.legacy_connection_id == conn.id).first()
+    if not manager:
+        manager = db.query(Manager).filter(
+            Manager.api_key_vault_ref == _vault_ref_for_connection(conn.id)
+        ).first()
+
+    if not manager:
+        manager = Manager(
+            nombre=conn.name,
+            api_url=conn.indexer_url,
+            api_key_vault_ref=_vault_ref_for_connection(conn.id),
+            legacy_connection_id=conn.id,
+        )
+        db.add(manager)
+        db.flush()
+    else:
+        manager.nombre = conn.name
+        manager.api_url = conn.indexer_url
+        manager.api_key_vault_ref = _vault_ref_for_connection(conn.id)
+        manager.legacy_connection_id = conn.id
+
+    return manager
+
+
+def _extract_ip(agent: dict, raw_vuln: dict) -> Optional[str]:
+    host = raw_vuln.get("host") or {}
+    ip_value = agent.get("ip") or host.get("ip") or raw_vuln.get("ip")
+    if isinstance(ip_value, list):
+        return ip_value[0] if ip_value else None
+    return ip_value
+
+
+def _get_or_create_asset(
+    db: Session,
+    manager: Manager,
+    agent: dict,
+    osinfo: dict,
+    raw_vuln: dict,
+) -> Asset:
+    wazuh_agent_id = agent.get("id") or "unknown"
+    asset = db.query(Asset).filter(
+        Asset.manager_id == manager.id,
+        Asset.wazuh_agent_id == wazuh_agent_id,
+    ).first()
+
+    if not asset:
+        asset = Asset(manager_id=manager.id, wazuh_agent_id=wazuh_agent_id)
+        db.add(asset)
+        db.flush()
+
+    asset.hostname = agent.get("name") or asset.hostname
+    asset.os_version = osinfo.get("full") or osinfo.get("version") or asset.os_version
+    asset.ip_address = _extract_ip(agent, raw_vuln) or asset.ip_address
+    return asset
+
+
+def _upsert_catalog(db: Session, vuln: dict) -> VulnerabilityCatalog:
+    cve_id = vuln.get("id")
+    catalog = db.query(VulnerabilityCatalog).filter(
+        VulnerabilityCatalog.cve_id == cve_id
+    ).first()
+
+    if not catalog:
+        catalog = VulnerabilityCatalog(cve_id=cve_id)
+        db.add(catalog)
+
+    catalog.severity = _normalize_severity(vuln.get("severity"))
+    catalog.description = vuln.get("description")
+    catalog.cvss_score = _score_base(vuln)
+    return catalog
+
+
+def _record_detection_event(
+    db: Session,
+    asset_id: str,
+    cve_id: str,
+    status: str,
+    pkg: dict,
+    scan_timestamp: datetime,
+) -> None:
+    db.add(VulnerabilityDetection(
+        timestamp=scan_timestamp,
+        asset_id=asset_id,
+        cve_id=cve_id,
+        status=status,
+        package_name=pkg.get("name") or "",
+        package_version=pkg.get("version") or "",
+    ))
+
+
 def _handle_existing_vuln(db: Session, existing: WazuhVulnerability, vuln: dict) -> None:
     if existing.status == "RESOLVED":
         existing.status = "ACTIVE"
@@ -356,9 +553,21 @@ def _handle_existing_vuln(db: Session, existing: WazuhVulnerability, vuln: dict)
     existing.last_seen = func.now()
 
 
+def _event_status_for_existing(existing: WazuhVulnerability) -> str:
+    if existing.status == "RESOLVED":
+        return "Re-emerged"
+    return "Detected"
+
+
 def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) -> int:
+    conn = db.query(WazuhConnection).filter(WazuhConnection.id == conn_id).first()
+    if not conn:
+        raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND)
+
     count = 0
     seen_vuln_ids = set()
+    scan_timestamp = datetime.now(timezone.utc)
+    manager = _get_or_create_manager(db, conn)
 
     active_vulns_in_db = db.query(WazuhVulnerability).filter_by(connection_id=conn_id, status="ACTIVE").all()
     active_vuln_dict = {v.id: v for v in active_vulns_in_db}
@@ -372,6 +581,9 @@ def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) ->
         if not vuln.get("id"):
             continue
 
+        asset = _get_or_create_asset(db, manager, agent, osinfo, v)
+        catalog = _upsert_catalog(db, vuln)
+
         existing = db.query(WazuhVulnerability).filter_by(
             connection_id=conn_id,
             agent_id=agent.get("id"),
@@ -381,15 +593,25 @@ def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) ->
         ).first()
 
         if existing:
+            event_status = _event_status_for_existing(existing)
             seen_vuln_ids.add(existing.id)
             _handle_existing_vuln(db, existing, vuln)
         else:
+            event_status = "Detected"
             new_vuln = _create_new_vuln(db, conn_id, agent, osinfo, pkg, vuln)
             seen_vuln_ids.add(new_vuln.id)
 
+        _record_detection_event(
+            db,
+            asset.id,
+            catalog.cve_id,
+            event_status,
+            pkg,
+            scan_timestamp,
+        )
         count += 1
 
-    _resolve_missing_vulns(db, active_vuln_dict, seen_vuln_ids)
+    _resolve_missing_vulns(db, manager, active_vuln_dict, seen_vuln_ids, scan_timestamp)
     return count
 
 
@@ -426,7 +648,7 @@ def _create_new_vuln(db, conn_id, agent, osinfo, pkg, vuln):
     return new_vuln
 
 
-def _resolve_missing_vulns(db, active_vuln_dict, seen_vuln_ids):
+def _resolve_missing_vulns(db, manager, active_vuln_dict, seen_vuln_ids, scan_timestamp):
     for vuln_id, db_vuln in active_vuln_dict.items():
         if vuln_id not in seen_vuln_ids:
             db_vuln.status = "RESOLVED"
@@ -435,6 +657,27 @@ def _resolve_missing_vulns(db, active_vuln_dict, seen_vuln_ids):
                 action="RESOLVED",
                 details="Ya no es reportada por el agente (Probablemente parcheada)",
             ))
+            asset = _get_or_create_asset(
+                db,
+                manager,
+                {"id": db_vuln.agent_id, "name": db_vuln.agent_name},
+                {"full": db_vuln.os_full, "version": db_vuln.os_version},
+                {},
+            )
+            catalog = _upsert_catalog(db, {
+                "id": db_vuln.cve_id,
+                "severity": db_vuln.severity,
+                "description": db_vuln.description,
+                "score": {"base": db_vuln.score_base},
+            })
+            _record_detection_event(
+                db,
+                asset.id,
+                catalog.cve_id,
+                "Resolved",
+                {"name": db_vuln.package_name, "version": db_vuln.package_version},
+                scan_timestamp,
+            )
 
 
 @app.post("/vulns/sync-all")
@@ -518,3 +761,132 @@ def list_vulns(
         }
         for v in vulns
     ]
+
+
+def _db_dialect(db: Session) -> str:
+    return db.get_bind().dialect.name
+
+
+def _filter_detections_by_connection(query, connection_id: Optional[int]):
+    if connection_id is None:
+        return query
+    return query.join(VulnerabilityDetection.asset).join(Asset.manager).filter(
+        Manager.legacy_connection_id == connection_id
+    )
+
+
+def _week_start(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    start = value - timedelta(days=value.weekday())
+    return start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _weekly_trend_fallback(db: Session, connection_id: Optional[int]):
+    query = db.query(VulnerabilityDetection).filter(
+        VulnerabilityDetection.status == "Detected"
+    )
+    query = _filter_detections_by_connection(query, connection_id)
+
+    buckets = {}
+    for detection in query.all():
+        bucket = _week_start(detection.timestamp)
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+
+    return [
+        {"semana": bucket.isoformat(), "total_vulnerabilidades": total}
+        for bucket, total in sorted(buckets.items(), key=lambda item: item[0])
+    ]
+
+
+@app.get("/vulns/evolution/weekly")
+def weekly_vulnerability_trend(
+    connection_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if _db_dialect(db) == "postgresql":
+        rows = db.execute(text("""
+            SELECT time_bucket('1 week', vd.timestamp) AS semana,
+                   count(*) AS total_vulnerabilidades
+            FROM vulnerability_detections vd
+            JOIN assets a ON a.id = vd.asset_id
+            JOIN managers m ON m.id = a.manager_id
+            WHERE vd.status = 'Detected'
+              AND (:connection_id IS NULL OR m.legacy_connection_id = :connection_id)
+            GROUP BY semana
+            ORDER BY semana
+        """), {"connection_id": connection_id}).mappings().all()
+        return [
+            {
+                "semana": row["semana"].isoformat() if row["semana"] else None,
+                "total_vulnerabilidades": row["total_vulnerabilidades"],
+            }
+            for row in rows
+        ]
+
+    return _weekly_trend_fallback(db, connection_id)
+
+
+@app.get("/vulns/evolution/top-assets")
+def top_vulnerable_assets(
+    days: int = 7,
+    limit: int = 5,
+    connection_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    days = max(1, min(days, 365))
+    limit = max(1, min(limit, 50))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = db.query(
+        Asset.hostname.label("hostname"),
+        sql_func.count(sql_func.distinct(VulnerabilityDetection.cve_id)).label("total"),
+    ).join(
+        VulnerabilityDetection, VulnerabilityDetection.asset_id == Asset.id
+    ).join(
+        Manager, Manager.id == Asset.manager_id
+    ).filter(
+        VulnerabilityDetection.timestamp >= since,
+        VulnerabilityDetection.status.in_(["Detected", "Re-emerged"]),
+    )
+
+    if connection_id is not None:
+        rows = rows.filter(Manager.legacy_connection_id == connection_id)
+
+    rows = rows.group_by(Asset.hostname).order_by(text("total DESC")).limit(limit).all()
+    return [
+        {"hostname": hostname or "Sin hostname", "total": total}
+        for hostname, total in rows
+    ]
+
+
+@app.get("/vulns/evolution/summary")
+def vulnerability_evolution_summary(
+    connection_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    active_query = db.query(WazuhVulnerability).filter(WazuhVulnerability.status == "ACTIVE")
+    resolved_query = db.query(WazuhVulnerability).filter(WazuhVulnerability.status == "RESOLVED")
+
+    if connection_id is not None:
+        active_query = active_query.filter(WazuhVulnerability.connection_id == connection_id)
+        resolved_query = resolved_query.filter(WazuhVulnerability.connection_id == connection_id)
+
+    detections_query = db.query(VulnerabilityDetection)
+    detections_query = _filter_detections_by_connection(detections_query, connection_id)
+
+    assets_query = db.query(Asset)
+    if connection_id is not None:
+        assets_query = assets_query.join(Asset.manager).filter(
+            Manager.legacy_connection_id == connection_id
+        )
+
+    return {
+        "active_vulnerabilities": active_query.count(),
+        "resolved_vulnerabilities": resolved_query.count(),
+        "assets": assets_query.count(),
+        "detection_events": detections_query.count(),
+    }
