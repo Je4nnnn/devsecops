@@ -86,7 +86,7 @@ EOF
 
         stage('SAST: SonarQube Code Analysis'){
             environment {
-                SONAR_AUTH_TOKEN = credentials('sonar-token')
+                SONAR_TOKEN = credentials('sonar-token')
             }
             steps {
                 script {
@@ -98,7 +98,7 @@ EOF
                                 -Dproject.settings=dev-tools/sonarqube/sonar-project.properties \
                                 -Dsonar.projectBaseDir=. \
                                 -Dsonar.host.url=$SONAR_SERVER_URL \
-                                -Dsonar.login=$SONAR_AUTH_TOKEN
+                                -Dsonar.token=$SONAR_TOKEN
                             '''
                         }     
                     }
@@ -108,7 +108,7 @@ EOF
 
         stage('GATE: SonarQube Quality Gate') {
             environment {
-                SONAR_AUTH_TOKEN = credentials('sonar-token')
+                SONAR_TOKEN = credentials('sonar-token')
             }
             steps {
                 script {
@@ -144,7 +144,7 @@ import sys
 import urllib.request
 
 url = "${serverUrl}/api/ce/task?id=${ceTaskId}"
-token = os.environ["SONAR_AUTH_TOKEN"]
+token = os.environ["SONAR_TOKEN"]
 req = urllib.request.Request(url)
 req.add_header("Authorization", "Basic " + base64.b64encode(f"{token}:".encode()).decode())
 with urllib.request.urlopen(req, timeout=30) as resp:
@@ -180,7 +180,7 @@ import os
 import urllib.request
 
 url = "${serverUrl}/api/qualitygates/project_status?analysisId=${analysisId}"
-token = os.environ["SONAR_AUTH_TOKEN"]
+token = os.environ["SONAR_TOKEN"]
 req = urllib.request.Request(url)
 req.add_header("Authorization", "Basic " + base64.b64encode(f"{token}:".encode()).decode())
 with urllib.request.urlopen(req, timeout=30) as resp:
