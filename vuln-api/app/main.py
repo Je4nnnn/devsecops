@@ -257,6 +257,7 @@ def list_connections(
             "tested": c.tested,
             "last_tested_at": c.last_tested_at,
             "last_test_ok": c.last_test_ok,
+            "last_sync_at": c.last_sync_at,
         }
         for c in conns
     ]
@@ -413,8 +414,32 @@ def sync_connection(
 
     count = process_wazuh_vulnerabilities(db, conn.id, raw_vulns)
     db.commit()
+    db.refresh(conn)
 
-    return {"synced": count, "connection": conn.name}
+    return {
+        "synced": count,
+        "connection": conn.name,
+        "sync_timestamp": conn.last_sync_at.isoformat() if conn.last_sync_at else None,
+    }
+
+
+def _parse_wazuh_timestamp(v: dict, fallback: datetime) -> datetime:
+    """Usa el @timestamp del documento Wazuh si está disponible; si no, el fallback local."""
+    raw = v.get("@timestamp")
+    if raw:
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            pass
+    # Intento secundario: vulnerability.detected_at
+    vuln = v.get("vulnerability") or {}
+    raw2 = vuln.get("detected_at")
+    if raw2:
+        try:
+            return datetime.fromisoformat(raw2.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            pass
+    return fallback
 
 
 def _normalize_severity(value: Optional[str]) -> str:
@@ -601,17 +626,20 @@ def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) ->
             new_vuln = _create_new_vuln(db, conn_id, agent, osinfo, pkg, vuln)
             seen_vuln_ids.add(new_vuln.id)
 
+        wazuh_ts = _parse_wazuh_timestamp(v, scan_timestamp)
         _record_detection_event(
             db,
             asset.id,
             catalog.cve_id,
             event_status,
             pkg,
-            scan_timestamp,
+            wazuh_ts,
         )
         count += 1
 
     _resolve_missing_vulns(db, manager, active_vuln_dict, seen_vuln_ids, scan_timestamp)
+
+    conn.last_sync_at = scan_timestamp
     return count
 
 
@@ -884,9 +912,16 @@ def vulnerability_evolution_summary(
             Manager.legacy_connection_id == connection_id
         )
 
+    # Última sincronización: la más reciente entre todas las conexiones del filtro
+    sync_query = db.query(sql_func.max(WazuhConnection.last_sync_at))
+    if connection_id is not None:
+        sync_query = sync_query.filter(WazuhConnection.id == connection_id)
+    last_sync_at = sync_query.scalar()
+
     return {
         "active_vulnerabilities": active_query.count(),
         "resolved_vulnerabilities": resolved_query.count(),
         "assets": assets_query.count(),
         "detection_events": detections_query.count(),
+        "last_sync_at": last_sync_at.isoformat() if last_sync_at else None,
     }

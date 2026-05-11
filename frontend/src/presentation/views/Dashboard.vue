@@ -6,7 +6,12 @@
         <h1 class="title">Panorama de Amenazas</h1>
         <p class="subtitle">Visualiza y gestiona el inventario de vulnerabilidades reportado por Wazuh.</p>
       </div>
-      <div>
+      <div class="header-right">
+        <div v-if="evolutionSummary?.last_sync_at" class="sync-badge">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>Último sync: <strong>{{ timeAgo(evolutionSummary.last_sync_at) }}</strong></span>
+          <span class="sync-date-full">{{ formatDate(evolutionSummary.last_sync_at) }}</span>
+        </div>
         <button class="btn btn-primary" @click="syncVulns" :disabled="syncing">
           <svg v-if="syncing" class="spin" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
           <svg v-else xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-9.5l1.75 1.93"></path></svg>
@@ -37,6 +42,11 @@
       <div class="metric-tile">
         <span class="metric-label">Eventos históricos</span>
         <strong>{{ evolutionSummary.detection_events }}</strong>
+      </div>
+      <div class="metric-tile metric-tile-wide">
+        <span class="metric-label">Timestamp Wazuh (último sync)</span>
+        <strong class="sync-ts-value">{{ evolutionSummary.last_sync_at ? timeAgo(evolutionSummary.last_sync_at) : 'Sin sincronizar' }}</strong>
+        <span v-if="evolutionSummary.last_sync_at" class="metric-sub">{{ formatDate(evolutionSummary.last_sync_at) }}</span>
       </div>
     </div>
 
@@ -825,11 +835,54 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.sync-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.7rem;
+}
+
+.sync-badge strong {
+  color: var(--text-main);
+}
+
+.sync-date-full {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
 .evolution-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(180px, auto);
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.metric-tile-wide {
+  border-left: 3px solid var(--primary);
+}
+
+.sync-ts-value {
+  font-size: 1.2rem !important;
+}
+
+.metric-sub {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
 }
 
 .metric-tile {

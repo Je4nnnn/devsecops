@@ -50,6 +50,7 @@ class WazuhConnection(Base):
     tested = Column(Boolean, default=False)
     last_tested_at = Column(DateTime(timezone=True), nullable=True)
     last_test_ok = Column(Boolean, nullable=True)
+    last_sync_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class Manager(Base):
