@@ -385,7 +385,7 @@ describe('useTimelineData', () => {
   })
 
   describe('fetchConnectionVulns function', () => {
-    it('sets warning when limit is reached', async () => {
+    it('returns large responses without setting a truncation warning', async () => {
       const largeData = Array.from({ length: 2000 }, (_, i) => ({
         id: i,
         first_seen: '2026-03-07T10:00:00Z',
@@ -394,10 +394,10 @@ describe('useTimelineData', () => {
 
       vulnService.getVulns.mockResolvedValueOnce({ data: largeData })
 
-      await timeline.fetchConnectionVulns()
+      const result = await timeline.fetchConnectionVulns()
 
-      expect(timeline.warningMessage.value).toContain('2000')
-      expect(timeline.warningMessage.value).toContain('truncado')
+      expect(result).toHaveLength(2000)
+      expect(timeline.warningMessage.value).toBe('')
     })
 
     it('handles API response without data array', async () => {
