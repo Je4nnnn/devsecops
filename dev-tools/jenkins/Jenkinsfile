@@ -8,6 +8,7 @@ pipeline {
 
     options {
         ansiColor('xterm')
+        disableConcurrentBuilds()
     }
 
     stages {
@@ -62,6 +63,7 @@ EOF
                 sh '''
                     set -eu
 
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml down --remove-orphans || true
                     docker compose -f dev-tools/sonarqube/docker-compose.yml up -d
 
                     echo "Esperando a que SonarQube quede disponible en ${SONAR_SERVER_URL}..."
