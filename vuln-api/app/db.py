@@ -1,10 +1,10 @@
-# app/db.py
+﻿# app/db.py
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv()  # Sin override: Docker Compose env vars tienen prioridad
 
 DATABASE_URL = os.getenv("DATABASE_URL")  # ej: postgresql://user:pass@host:5432/db
 
