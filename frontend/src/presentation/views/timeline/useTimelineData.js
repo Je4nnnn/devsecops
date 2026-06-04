@@ -1,23 +1,26 @@
 import { computed, ref } from 'vue'
 import vulnService from '../../../application/services/vulnService'
-import { DAY_MS, HOUR_MS, alignHour, fmtDDMM, fmtHour, fmtYear } from './timelineFormatters'
+import { HOUR_MS, fmtDDMM, fmtHour, fmtYear } from './timelineFormatters'
 
-const startOfLocalDay = ms => {
-  const date = new Date(ms)
-  date.setHours(0, 0, 0, 0)
-  return date.getTime()
+// Mapea el periodo de la UI al periodo/bucket del backend
+const PERIOD_MAP = {
+  '24h': '24h',
+  '7d': '7d',
+  '30d': '30d',
+  'day': '24h',
+  'all': 'all',
 }
 
 const initialZoomForPeriod = period => {
   if (period === '7d') return 2
-  if (period === '24h') return 4
-  if (period === 'day') return 5
+  if (period === '24h' || period === 'day') return 4
   return 0
 }
 
-const validMs = value => {
-  const ms = new Date(value).getTime()
-  return Number.isNaN(ms) ? null : ms
+const bucketToSlotHours = bucket => {
+  if (!bucket) return 24
+  if (bucket.includes('hour')) return 1
+  return 24
 }
 
 export default function useTimelineData({
@@ -25,337 +28,124 @@ export default function useTimelineData({
   selectedAgents,
   selectedVulns,
   period,
-  customDate,
-  activeZoom,
-  getConnectionName
 }) {
   const loading = ref(false)
   const hasBuilt = ref(false)
-  const filteredVulnsData = ref([])
-  const changeEvents = ref([])
-  const latestSnap = ref({ total: 0, pending: 0, resolved: 0 })
-  const rangeStartMs = ref(0)
-  const rangeEndMs = ref(0)
   const errorMessage = ref('')
   const warningMessage = ref('')
-  const snapshotCache = ref(new Map())
+  const points = ref([])
+  const bucketLabel = ref('1 day')
+  const latestSnap = ref({ total: 0, pending: 0, resolved: 0 })
 
-  const computeRange = vulns => {
-    const latestObservedMs = vulns.reduce((latest, vuln) => {
-      const candidates = [
-        validMs(vuln.first_seen),
-        validMs(vuln.last_seen),
-        ...((vuln.history || []).map(item => validMs(item.timestamp)))
-      ].filter(ms => ms !== null)
-
-      if (!candidates.length) return latest
-      return Math.max(latest, ...candidates)
-    }, 0)
-
-    const anchorDate = latestObservedMs ? new Date(latestObservedMs) : new Date()
-    const now = anchorDate
-    let start = new Date(0)
-    let end = now
-
-    if (period.value === '24h') start = new Date(now.getTime() - DAY_MS)
-    if (period.value === '7d') start = new Date(now.getTime() - 7 * DAY_MS)
-    if (period.value === '30d') start = new Date(now.getTime() - 30 * DAY_MS)
-
-    if (period.value === 'day') {
-      start = new Date(`${customDate.value}T00:00:00`)
-      end = new Date(`${customDate.value}T23:59:59`)
-    }
-
-    if (period.value === 'all' && vulns.length > 0) {
-      const earliest = vulns
-        .map(vuln => new Date(vuln.first_seen).getTime())
-        .filter(ms => !Number.isNaN(ms))
-        .sort((a, b) => a - b)[0]
-      if (earliest) {
-        start = new Date(earliest)
-      }
-      if (latestObservedMs) {
-        end = new Date(latestObservedMs)
-      }
-    }
-
-    return { start, end }
-  }
-
-  const summarizeChanges = (startMs, endMs) => {
-    let hasDetection = false
-    let hasResolution = false
-
-    for (const event of changeEvents.value) {
-      if (event.ms < startMs) continue
-      if (event.ms > endMs) break
-      if (event.kind === 'detection') hasDetection = true
-      if (event.kind === 'resolution') hasResolution = true
-      if (hasDetection && hasResolution) break
-    }
-
-    return { hasDetection, hasResolution }
-  }
-
-  const getVulnerabilityStateAtTime = (vuln, ms) => {
-    const firstSeenMs = new Date(vuln.first_seen).getTime()
-    if (Number.isNaN(firstSeenMs) || firstSeenMs > ms) {
-      return null // Vulnerability not yet seen
-    }
-
-    let state = 'ACTIVE'
-    let resolvedAt = null
-
-    for (const historyItem of vuln.historySorted) {
-      const historyMs = new Date(historyItem.timestamp).getTime()
-      if (Number.isNaN(historyMs) || historyMs > ms) break
-      if (historyItem.action === 'RESOLVED') {
-        state = 'RESOLVED'
-        resolvedAt = historyItem.timestamp
-      } else {
-        state = 'ACTIVE'
-        resolvedAt = null
-      }
-    }
-
-    return { state, resolvedAt }
-  }
-
-  const buildSnapshotDetails = (vulns, ms) => {
-    const details = []
-
-    vulns.forEach(vuln => {
-      const vulnState = getVulnerabilityStateAtTime(vuln, ms)
-      if (!vulnState) return
-
-      details.push({
-        ...vuln,
-        status: vulnState.state,
-        resolved_at: vulnState.resolvedAt,
-        connection_name: vulnState.connection_name || getConnectionName()
-      })
-    })
-
-    return details
-  }
-
-  const snapshotAt = ms => {
-    if (snapshotCache.value.has(ms)) {
-      return snapshotCache.value.get(ms)
-    }
-
-    const details = buildSnapshotDetails(filteredVulnsData.value, ms)
-
-    let total = 0
-    let pending = 0
-    let resolved = 0
-
-    details.forEach(vuln => {
-      total += 1
-      if (vuln.status === 'ACTIVE') pending += 1
-      else resolved += 1
-    })
-
-    const snapshot = { total, pending, resolved, details }
-    snapshotCache.value.set(ms, snapshot)
-    return snapshot
-  }
-
-  const getTimelineEventInSlot = (vuln, startMs, endMs) => {
-    const candidates = []
-
-    const firstSeenMs = new Date(vuln.first_seen).getTime()
-    if (!Number.isNaN(firstSeenMs) && firstSeenMs >= startMs && firstSeenMs <= endMs) {
-      candidates.push({
-        at: vuln.first_seen,
-        label: 'DETECTED_APP',
-        source: 'first_seen'
-      })
-    }
-
-    for (const historyItem of vuln.historySorted) {
-      const historyMs = new Date(historyItem.timestamp).getTime()
-      if (Number.isNaN(historyMs) || historyMs < startMs || historyMs > endMs) continue
-
-      if (['DETECTED', 'REOPENED', 'RESOLVED'].includes(historyItem.action)) {
-        candidates.push({
-          at: historyItem.timestamp,
-          label: historyItem.action,
-          source: 'history'
-        })
-      }
-    }
-
-    if (!candidates.length) return null
-
-    candidates.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
-    return candidates[0]
-  }
-
-  const getSlotType = (summary) => {
-    if (summary.hasDetection && summary.hasResolution) return 'mixed'
-    if (summary.hasDetection) return 'detection'
-    if (summary.hasResolution) return 'resolution'
+  // Determina el "tipo" visual del slot a partir de los conteos del bucket
+  const slotType = (p) => {
+    const detections = (p.nuevas || 0) + (p.reemergidas || 0)
+    const resolutions = p.remediadas || 0
+    if (detections > 0 && resolutions > 0) return 'mixed'
+    if (detections > 0) return 'detection'
+    if (resolutions > 0) return 'resolution'
     return 'none'
   }
 
-  const getSlotDetails = (snapshot, startMs, endMs) => {
-    if (!snapshot) return []
-    // Solo incluir vulnerabilidades que tienen un evento EN este slot específico
-    return snapshot.details
-      .map(vuln => {
-        const timelineEvent = getTimelineEventInSlot(vuln, startMs, endMs)
+  const allSlots = computed(() => {
+    const slotHours = bucketToSlotHours(bucketLabel.value)
+    return points.value
+      .map(p => {
+        const startMs = new Date(p.bucket).getTime()
+        const detections = (p.nuevas || 0) + (p.reemergidas || 0)
+        const resolved = p.remediadas || 0
+        const type = slotType(p)
         return {
-          ...vuln,
-          timeline_event_at: timelineEvent?.at ?? null,
-          timeline_event_label: timelineEvent?.label ?? null,
-          timeline_event_source: timelineEvent?.source ?? null
+          startMs,
+          bucket: p.bucket,
+          painted: type !== 'none',
+          type,
+          total: detections + resolved,
+          pending: detections,
+          resolved,
+          nuevas: p.nuevas || 0,
+          reemergidas: p.reemergidas || 0,
+          remediadas: p.remediadas || 0,
+          slotHours,
+          tickLabel: slotHours >= 24 ? fmtDDMM(startMs) : fmtHour(startMs),
+          cardLabel: slotHours >= 24
+            ? `${fmtDDMM(startMs)} ${fmtYear(startMs)}`
+            : `${fmtDDMM(startMs)} ${fmtHour(startMs)}`,
+          // details se cargan bajo demanda al abrir el slot
+          details: [],
         }
       })
-      .filter(vuln => vuln.timeline_event_at !== null) // Solo vulnerabilidades con eventos reales
-  }
-
-  const createSlot = (startMs, endMs, summary, snapshot, slotHours) => {
-    const painted = summary.hasDetection || summary.hasResolution
-    const type = getSlotType(summary)
-    const details = getSlotDetails(snapshot, startMs, endMs)
-
-    // Contadores basados en vulnerabilidades con eventos, no en snapshot completo
-    const total = details.length
-    const pending = details.filter(v => v.status === 'ACTIVE').length
-    const resolved = details.filter(v => v.status === 'RESOLVED').length
-
-    return {
-      startMs,
-      endMs,
-      painted,
-      type,
-      total,
-      pending,
-      resolved,
-      details,
-      tickLabel: slotHours >= 24 ? fmtDDMM(startMs) : fmtHour(startMs),
-      cardLabel: slotHours >= 24
-        ? `${fmtDDMM(startMs)} ${fmtYear(startMs)}`
-        : `${fmtDDMM(startMs)} ${fmtHour(startMs)}`
-    }
-  }
-
-  const allSlots = computed(() => {
-    if (!hasBuilt.value || !rangeStartMs.value || !rangeEndMs.value) return []
-
-    const slots = []
-    const slotMs = activeZoom.value.slotHours * HOUR_MS
-    const isDayGranularity = activeZoom.value.slotHours >= 24
-    const baseStartMs = isDayGranularity ? startOfLocalDay(rangeStartMs.value) : rangeStartMs.value
-    const totalSlotCount = Math.max(1, Math.ceil((rangeEndMs.value - baseStartMs + 1) / slotMs))
-
-    for (let index = 0; index < totalSlotCount; index++) {
-      const startMs = baseStartMs + index * slotMs
-      const endMs = Math.min(rangeEndMs.value, startMs + slotMs - 1)
-      const summary = summarizeChanges(startMs, endMs)
-      const painted = summary.hasDetection || summary.hasResolution
-      
-      // Solo crear slot si hay eventos reales (detecciones o resoluciones)
-      if (painted) {
-        const snapshot = snapshotAt(endMs)
-        slots.push(createSlot(startMs, endMs, summary, snapshot, activeZoom.value.slotHours))
-      }
-    }
-
-    return slots
+      .filter(slot => slot.painted)
   })
 
-  const paintedCount = computed(() => allSlots.value.filter(slot => slot.painted).length)
-
-  const fetchConnectionVulns = async () => {
-    const response = await vulnService.getVulns({
-      connectionId: selectedConnection.value
-    })
-
-    return Array.isArray(response.data) ? response.data : []
-  }
-
-  const resetBuildState = () => {
-    loading.value = true
-    hasBuilt.value = false
-    errorMessage.value = ''
-    warningMessage.value = ''
-    changeEvents.value = []
-    filteredVulnsData.value = []
-    snapshotCache.value.clear()
-  }
-
-  const filterVulnerabilities = (data) => {
-    return data.filter(vuln => {
-      const byAgent = selectedAgents.value.length === 0 || selectedAgents.value.includes(vuln.agent_name)
-      const byVuln = selectedVulns.value.length === 0 || selectedVulns.value.includes(vuln.cve_id)
-      return byAgent && byVuln
-    })
-  }
-
-  const processVulnerabilities = (vulns) => {
-    return vulns.map(vuln => ({
-      ...vuln,
-      historySorted: [...(vuln.history || [])].sort(
-        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-      )
-    }))
-  }
-
-  const buildChangeEvents = (vulns) => {
-    const events = []
-
-    vulns.forEach(vuln => {
-      const firstSeenMs = new Date(vuln.first_seen).getTime()
-      if (firstSeenMs >= rangeStartMs.value && firstSeenMs <= rangeEndMs.value) {
-        events.push({ ms: firstSeenMs, kind: 'detection' })
-      }
-
-      vuln.historySorted.forEach(historyItem => {
-        const historyMs = new Date(historyItem.timestamp).getTime()
-        if (historyMs < rangeStartMs.value || historyMs > rangeEndMs.value) return
-        if (historyItem.action === 'RESOLVED') {
-          events.push({ ms: historyMs, kind: 'resolution' })
-        }
-      })
-    })
-
-    return events
-  }
-
-  const finalizeBuild = (events) => {
-    const sortedEvents = [...events].sort((a, b) => a.ms - b.ms)
-    changeEvents.value = sortedEvents
-    latestSnap.value = snapshotAt(rangeEndMs.value)
-    hasBuilt.value = true
-    return { initialZoom: initialZoomForPeriod(period.value) }
-  }
+  const paintedCount = computed(() => allSlots.value.length)
 
   const build = async () => {
     if (!selectedConnection.value) return { initialZoom: 0 }
 
-    resetBuildState()
+    loading.value = true
+    hasBuilt.value = false
+    errorMessage.value = ''
+    warningMessage.value = ''
 
     try {
-      const data = await fetchConnectionVulns()
-      const filteredVulns = filterVulnerabilities(data)
-      const processedVulns = processVulnerabilities(filteredVulns)
+      const params = {
+        period: PERIOD_MAP[period.value] || '30d',
+        connection_id: selectedConnection.value,
+      }
+      if (selectedAgents.value?.length) params.agent_name = selectedAgents.value.join(',')
+      if (selectedVulns.value?.length) params.cve_id = selectedVulns.value.join(',')
 
-      filteredVulnsData.value = processedVulns
+      const res = await vulnService.getTraceabilityTimeline({ params })
+      const data = res.data || {}
+      points.value = Array.isArray(data.points) ? data.points : []
+      bucketLabel.value = data.bucket || '1 day'
 
-      const { start, end } = computeRange(filteredVulnsData.value)
-      rangeStartMs.value = alignHour(start.getTime())
-      rangeEndMs.value = end.getTime()
+      const totals = points.value.reduce(
+        (acc, p) => {
+          acc.pending += (p.nuevas || 0) + (p.reemergidas || 0)
+          acc.resolved += p.remediadas || 0
+          return acc
+        },
+        { pending: 0, resolved: 0 }
+      )
+      latestSnap.value = {
+        total: totals.pending + totals.resolved,
+        pending: totals.pending,
+        resolved: totals.resolved,
+      }
 
-      const events = buildChangeEvents(filteredVulnsData.value)
-      return finalizeBuild(events)
+      if (!points.value.length) {
+        warningMessage.value = 'No hay eventos de trazabilidad en el periodo seleccionado.'
+      }
+
+      hasBuilt.value = true
+      return { initialZoom: initialZoomForPeriod(period.value) }
     } catch (error) {
+      console.error(error)
       errorMessage.value = 'No se pudo generar la linea de tiempo. Intenta nuevamente.'
       throw error
     } finally {
       loading.value = false
     }
+  }
+
+  // Carga los registros de un bucket puntual (drill-down del modal)
+  const fetchSlotDetails = async (slot) => {
+    const slotMs = (slot.slotHours || 24) * HOUR_MS
+    const start = new Date(slot.startMs).toISOString()
+    const end = new Date(slot.startMs + slotMs - 1).toISOString()
+
+    const params = {
+      bucket_start: start,
+      bucket_end: end,
+      connection_id: selectedConnection.value,
+    }
+    if (selectedAgents.value?.length) params.agent_name = selectedAgents.value.join(',')
+    if (selectedVulns.value?.length) params.cve_id = selectedVulns.value.join(',')
+
+    const res = await vulnService.getTimelineDetails({ params })
+    return Array.isArray(res.data) ? res.data : []
   }
 
   return {
@@ -367,7 +157,6 @@ export default function useTimelineData({
     errorMessage,
     warningMessage,
     build,
-    fetchConnectionVulns,
-    snapshotAt
+    fetchSlotDetails,
   }
 }

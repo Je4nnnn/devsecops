@@ -1,7 +1,13 @@
 # 📋 Documentación Técnica — DevSecOps Vulnerability Platform
 
-> **Versión:** 1.0 — **Fecha:** 2026-05-11  
+> **Versión:** 1.1 — **Fecha:** 2026-05-28
 > **Autor:** Equipo VTYG
+>
+> **Novedades v1.1 (Entrega 2 — Análisis de Evolución):** procesamiento temporal
+> en backend (stored procedures + índices), listado **paginado y filtrado
+> server-side**, sincronización **en segundo plano** con barra de progreso y
+> *toast*, y línea de **trazabilidad de amenazas**. Ver el detalle completo en
+> [`docs/entrega2-analisis-evolucion.md`](docs/entrega2-analisis-evolucion.md).
 
 ---
 
@@ -84,7 +90,8 @@ devsecops2/
 │   │   ├── application/services/
 │   │   │   ├── authService.js      # Login, cambio de contraseña
 │   │   │   ├── userService.js      # Gestión de usuarios
-│   │   │   └── wazuhService.js     # CRUD de conexiones Wazuh
+│   │   │   ├── wazuhService.js     # CRUD de conexiones Wazuh
+│   │   │   └── vulnService.js      # Vulns paginadas, filtros, sync, evolución (v1.1)
 │   │   ├── infrastructure/http/
 │   │   │   ├── apiClient.js        # Instancia Axios con baseURL dinámica
 │   │   │   └── interceptors/
@@ -93,6 +100,11 @@ devsecops2/
 │   │   │   ├── router/index.js     # Rutas + guards de autenticación
 │   │   │   ├── directives/
 │   │   │   │   └── clickOutside.js # Directiva custom para cerrar menús
+│   │   │   ├── components/
+│   │   │   │   └── ToastHost.vue   # Contenedor de notificaciones toast (v1.1)
+│   │   │   ├── composables/
+│   │   │   │   ├── useToast.js     # Estado reactivo de toasts (v1.1)
+│   │   │   │   └── useSyncJob.js   # Polling de /sync/status + progreso (v1.1)
 │   │   │   └── views/
 │   │   │       ├── Login.vue            # Página de login
 │   │   │       ├── Dashboard.vue        # Métricas, gráficos, last sync
@@ -375,16 +387,34 @@ El índice `wazuh-states-vulnerabilities-*` contiene el estado actual de todas l
 | PUT | `/wazuh-connections/{id}` | Editar nombre, URL, usuario, contraseña |
 | DELETE | `/wazuh-connections/{id}` | Eliminar + **borrar todos sus datos** |
 | POST | `/wazuh-connections/{id}/test` | Probar conectividad → actualiza last_test_ok |
-| POST | `/wazuh-connections/{id}/sync` | Sincronizar vulnerabilidades de esa conexión |
+| POST | `/wazuh-connections/{id}/sync` | Lanza sync **en segundo plano** → devuelve `job_id` |
+
+#### Sincronización (segundo plano)
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/vulns/sync-all` | Lanza sync de todas las conexiones activas → `job_id` (400 si no hay activas) |
+| GET | `/sync/status` | Progreso de un job (`?job_id=`); sin param. devuelve el más reciente o `idle` |
+
+> La sincronización ya **no bloquea** la petición: corre en un hilo *daemon* y el
+> frontend hace *polling* a `/sync/status` para mostrar la barra de progreso y un
+> *toast* al terminar. Detalle en [`docs/entrega2-analisis-evolucion.md`](docs/entrega2-analisis-evolucion.md).
 
 #### Vulnerabilidades
 | Método | Ruta | Descripción |
 |--------|------|-------------|
-| POST | `/vulns/sync-all` | Sincroniza todas las conexiones activas |
-| GET | `/vulns` | Lista vulns (filtrable por `connection_id`, `limit`) |
+| GET | `/vulns` | Lista **paginada y filtrada server-side** → `{ items, total, page, page_size, total_pages }` |
+| GET | `/vulns/filter-options` | Opciones `DISTINCT` precalculadas (agents, cves, packages, severities) |
+| GET | `/vulns/{id}/history` | Historial detallado de una vulnerabilidad puntual (bajo demanda) |
 | GET | `/vulns/evolution/summary` | Resumen: activas, resueltas, assets, eventos, last_sync |
 | GET | `/vulns/evolution/weekly` | Tendencia semanal (`time_bucket` TimescaleDB) |
 | GET | `/vulns/evolution/top-assets` | Top N equipos más vulnerables |
+| GET | `/vulns/evolution/timeline` | Línea de trazabilidad por bucket (nuevas/reemergidas/remediadas) — `sp_traceability_timeline` |
+| GET | `/vulns/evolution/timeline-details` | Drill-down: registros de un bucket concreto (bajo demanda) |
+| GET | `/vulns/evolution/traceability-summary` | Tarjetas: nuevas, persistentes, remediadas, total activas — `sp_traceability_summary` |
+
+**Parámetros de `/vulns`:** `connection_id`, `agent_name`, `cve_id`,
+`package_name`, `severity`, `status`, `score_min`, `score_max`, `search`,
+`sort_by`, `sort_order`, `page`, `page_size`, `limit` (compat.).
 
 #### Validación de contraseña (política)
 ```
@@ -447,13 +477,24 @@ En desarrollo, Vite hace proxy: `/api/*` → `http://localhost:8000/*`
 - Llama `GET /vulns/evolution/summary` → métricas principales
 - Llama `GET /vulns/evolution/weekly` → gráfico de tendencia
 - Llama `GET /vulns/evolution/top-assets` → tabla top equipos
+- Llama `GET /vulns/evolution/traceability-summary` → tarjetas de trazabilidad
+- Tabla de vulnerabilidades con **paginación server-side** (`GET /vulns`)
+- **Barra de progreso** de sincronización + *toast* al terminar (`useSyncJob`)
+- Filtros precargados vía `GET /vulns/filter-options`
 - Muestra badge con fecha/hora del último sync
 
 #### `Timeline.vue`
-- Canvas interactivo HTML5
-- Muestra eventos de detección en el tiempo
+- Canvas interactivo HTML5 con la **línea de trazabilidad de amenazas**
+- Datos por bucket desde `GET /vulns/evolution/timeline`
+- **Drill-down** del modal bajo demanda (`GET /vulns/evolution/timeline-details`)
+- Filtros por agente y CVE; barra de carga indeterminada
 - Subcomponentes: `TimelineCanvas`, `TimelineFilters`, `TimelineKpiStrip`, `TimelineDetailModal`
-- Helpers: `timelineFormatters.js`, `useTimelineNavigation.js`
+- Helpers/composables: `useTimelineData.js`, `timelineFormatters.js`, `useTimelineNavigation.js`
+
+#### Componentes y composables transversales (v1.1)
+- `components/ToastHost.vue` + `composables/useToast.js` → notificaciones *toast*
+- `composables/useSyncJob.js` → estado global del job de sync, *polling* a `/sync/status`
+- `services/vulnService.js` → cliente dedicado de vulnerabilidades/evolución
 
 #### `ConfigWazuh.vue`
 - Lista todas las conexiones Wazuh
@@ -503,6 +544,23 @@ FROM vulnerability_detections
 WHERE status = 'Detected'
 GROUP BY 1 ORDER BY 1;
 ```
+
+### Objetos analíticos (v1.1) — `initialize_analytics_objects()`
+
+Al arrancar, el backend crea (solo en PostgreSQL) los índices y procedimientos
+almacenados que mueven la agregación pesada a la BD:
+
+- **Índices** sobre `wazuh_vulnerabilities`: `idx_wv_conn_status`,
+  `idx_wv_agent_name`, `idx_wv_cve`, `idx_wv_severity`, `idx_wv_last_seen`,
+  `idx_wv_package_name` → aceleran los filtros server-side.
+- **`sp_traceability_timeline(p_connection_id, p_bucket, p_start, p_end)`** →
+  nuevas/reemergidas/remediadas por bucket (`time_bucket`).
+- **`sp_traceability_summary(p_connection_id, p_new_window)`** →
+  nuevas/persistentes/remediadas/total_activas.
+
+> Bajo SQLite (tests) estos objetos no se crean y los endpoints usan rutas de
+> *fallback* en ORM. Detalle completo en
+> [`docs/entrega2-analisis-evolucion.md`](docs/entrega2-analisis-evolucion.md).
 
 ---
 
@@ -795,4 +853,4 @@ npm run dev   # http://localhost:5173
 
 ---
 
-*Documentación generada el 2026-05-11*
+*Documentación generada el 2026-05-11 — actualizada el 2026-05-28 (v1.1, Entrega 2).*

@@ -145,8 +145,10 @@ def test_sync_vulnerabilities_success(mock_fetch, client, db_session):
     assert sync_res.json()["synced"] == 1
 
     get_res = client.get("/vulns", headers=headers)
-    assert len(get_res.json()) == 1
-    vuln_item = get_res.json()[0]
+    payload = get_res.json()
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    vuln_item = payload["items"][0]
     assert vuln_item["cve_id"] == "CVE-2023-1234"
     # new requirement: response should include origin connection name
     assert vuln_item.get("connection_name") == "test"
@@ -406,22 +408,25 @@ def test_sync_all_success(mock_fetch, client, db_session):
     _create_connection(db_session, name="conn-1")
     _create_connection(db_session, name="conn-2")
     res = client.post("/vulns/sync-all", headers=_get_headers(client))
-    assert len(res.json()) == 2
-    assert all(r["ok"] for r in res.json())
+    body = res.json()
+    assert body["connections_total"] == 2
+    assert len(body["results"]) == 2
+    assert all(r["ok"] for r in body["results"])
 
 
 @patch("app.main.fetch_all_vulns", side_effect=Exception("unreachable"))
 def test_sync_all_partial_failure(mock_fetch, client, db_session):
     _create_user(db_session)
     _create_connection(db_session)
-    result = client.post("/vulns/sync-all", headers=_get_headers(client)).json()[0]
+    result = client.post("/vulns/sync-all", headers=_get_headers(client)).json()["results"][0]
     assert result["ok"] is False
 
 
 def test_sync_all_skips_inactive(client, db_session):
     _create_user(db_session)
     _create_connection(db_session, is_active=False)
-    assert client.post("/vulns/sync-all", headers=_get_headers(client)).json() == []
+    # Sin conexiones activas el backend responde 400 (nada que sincronizar).
+    assert client.post("/vulns/sync-all", headers=_get_headers(client)).status_code == 400
 
 
 def test_sync_all_unauthenticated(client):
@@ -432,7 +437,9 @@ def test_sync_all_unauthenticated(client):
 
 def test_list_vulns_empty(client, db_session):
     _create_user(db_session)
-    assert client.get("/vulns", headers=_get_headers(client)).json() == []
+    payload = client.get("/vulns", headers=_get_headers(client)).json()
+    assert payload["items"] == []
+    assert payload["total"] == 0
 
 
 def test_list_vulns_unauthenticated(client):
@@ -444,7 +451,7 @@ def test_list_vulns_limit_zero(mock_fetch, client, db_session):
     _create_user(db_session)
     conn = _create_connection(db_session)
     client.post(f"/wazuh-connections/{conn.id}/sync", headers=_get_headers(client))
-    assert client.get("/vulns?limit=0", headers=_get_headers(client)).json() == []
+    assert client.get("/vulns?limit=0", headers=_get_headers(client)).json()["items"] == []
 
 
 @patch("app.main.fetch_all_vulns", return_value=MOCK_VULN)
@@ -453,7 +460,7 @@ def test_list_vulns_shows_connection_name(mock_fetch, client, db_session):
     _create_user(db_session)
     conn = _create_connection(db_session, name="myconn")
     client.post(f"/wazuh-connections/{conn.id}/sync", headers=_get_headers(client))
-    res_list = client.get("/vulns", headers=_get_headers(client)).json()
+    res_list = client.get("/vulns", headers=_get_headers(client)).json()["items"]
     assert len(res_list) == 1
     assert res_list[0].get("connection_name") == "myconn"
 

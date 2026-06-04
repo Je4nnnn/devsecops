@@ -1,4 +1,6 @@
 <template>
+  <ToastHost />
+
   <div v-if="!isAuthenticated" class="auth-layout">
     <router-view></router-view>
   </div>
@@ -76,6 +78,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Swal from 'sweetalert2'
+import ToastHost from './presentation/components/ToastHost.vue'
 
 const router = useRouter()
 const route = useRoute()

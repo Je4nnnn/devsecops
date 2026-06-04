@@ -1,10 +1,20 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+# Ejecuta la sincronización de forma síncrona (sin hilos) compartiendo la
+# sesión de la petición, para que los tests vean los datos de inmediato.
+os.environ.setdefault("SYNC_INLINE", "1")
+
+import app.main as main
 from app.main import app
 from app.db import Base, get_db
+
+# Garantiza el modo inline aunque la variable de entorno se cargue tarde.
+main.SYNC_INLINE = True
 
 # Base de datos de prueba en memoria (SQLite)
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"

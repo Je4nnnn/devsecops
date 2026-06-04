@@ -1,15 +1,18 @@
 # app/main.py
 import re
 import os
+import math
+import uuid
+import threading
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import set_key, find_dotenv
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from typing import List, Annotated, Optional
 from pydantic import BaseModel
-from sqlalchemy import text, func as sql_func
+from sqlalchemy import text, func as sql_func, case, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import func
 from .db import Base, engine, get_db, SessionLocal
@@ -63,9 +66,155 @@ def initialize_timescale_storage():
         print(f"TimescaleDB no disponible, se usara PostgreSQL estandar: {exc}")
 
 
+def initialize_analytics_objects():
+    """Crea índices y procedimientos almacenados para acelerar filtros y trazabilidad.
+
+    Toda la agregación pesada vive en la base de datos (Processing component):
+    el frontend solo consume resultados precalculados con baja latencia.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+
+    try:
+        with engine.begin() as conn:
+            # --- Índices para filtros server-side sobre wazuh_vulnerabilities ---
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_wv_conn_status
+                ON wazuh_vulnerabilities (connection_id, status)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_wv_agent_name
+                ON wazuh_vulnerabilities (agent_name)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_wv_cve ON wazuh_vulnerabilities (cve_id)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_wv_severity
+                ON wazuh_vulnerabilities (severity)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_wv_last_seen
+                ON wazuh_vulnerabilities (last_seen DESC)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_wv_package_name
+                ON wazuh_vulnerabilities (package_name)
+            """))
+
+            # --- Procedimiento almacenado: línea de trazabilidad por bucket de tiempo ---
+            # Devuelve, por cada bucket, cuántas vulnerabilidades fueron Nuevas,
+            # Reemergidas y Remediadas (estados del algoritmo de trazabilidad).
+            conn.execute(text("""
+                CREATE OR REPLACE FUNCTION sp_traceability_timeline(
+                    p_connection_id INTEGER,
+                    p_bucket INTERVAL,
+                    p_start TIMESTAMPTZ,
+                    p_end TIMESTAMPTZ
+                )
+                RETURNS TABLE(
+                    bucket TIMESTAMPTZ,
+                    nuevas BIGINT,
+                    reemergidas BIGINT,
+                    remediadas BIGINT
+                )
+                LANGUAGE sql STABLE AS $$
+                    SELECT
+                        time_bucket(p_bucket, vd.timestamp) AS bucket,
+                        count(*) FILTER (WHERE vd.status = 'Detected')    AS nuevas,
+                        count(*) FILTER (WHERE vd.status = 'Re-emerged')  AS reemergidas,
+                        count(*) FILTER (WHERE vd.status = 'Resolved')    AS remediadas
+                    FROM vulnerability_detections vd
+                    JOIN assets a   ON a.id = vd.asset_id
+                    JOIN managers m ON m.id = a.manager_id
+                    WHERE vd.timestamp >= p_start
+                      AND vd.timestamp <= p_end
+                      AND (p_connection_id IS NULL OR m.legacy_connection_id = p_connection_id)
+                    GROUP BY bucket
+                    ORDER BY bucket
+                $$;
+            """))
+
+            # --- Procedimiento almacenado: resumen de trazabilidad (cards) ---
+            conn.execute(text("""
+                CREATE OR REPLACE FUNCTION sp_traceability_summary(
+                    p_connection_id INTEGER,
+                    p_new_window INTERVAL DEFAULT INTERVAL '7 days'
+                )
+                RETURNS TABLE(
+                    nuevas BIGINT,
+                    persistentes BIGINT,
+                    remediadas BIGINT,
+                    total_activas BIGINT
+                )
+                LANGUAGE sql STABLE AS $$
+                    SELECT
+                        count(*) FILTER (
+                            WHERE wv.status = 'ACTIVE'
+                              AND wv.first_seen >= now() - p_new_window
+                        ) AS nuevas,
+                        count(*) FILTER (
+                            WHERE wv.status = 'ACTIVE'
+                              AND wv.first_seen < now() - p_new_window
+                        ) AS persistentes,
+                        count(*) FILTER (WHERE wv.status = 'RESOLVED') AS remediadas,
+                        count(*) FILTER (WHERE wv.status = 'ACTIVE')   AS total_activas
+                    FROM wazuh_vulnerabilities wv
+                    WHERE (p_connection_id IS NULL OR wv.connection_id = p_connection_id)
+                $$;
+            """))
+    except SQLAlchemyError as exc:
+        print(f"No se pudieron crear objetos analíticos: {exc}")
+
+
 initialize_timescale_storage()
+initialize_analytics_objects()
 
 CONNECTION_NOT_FOUND = "Conexión no encontrada"
+
+# ---------------------------------------------------------------------------
+# Registro de trabajos de sincronización en segundo plano (progreso + toast)
+# ---------------------------------------------------------------------------
+SYNC_JOBS: dict = {}
+SYNC_JOBS_LOCK = threading.Lock()
+MAX_SYNC_JOBS = 20
+
+# En tests (o entornos sin worker) ejecuta la sincronización de forma
+# síncrona en la misma sesión de la petición, en vez de lanzar un hilo.
+SYNC_INLINE = os.getenv("SYNC_INLINE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _new_sync_job() -> str:
+    job_id = str(uuid.uuid4())
+    with SYNC_JOBS_LOCK:
+        # Limita el historial de trabajos en memoria
+        if len(SYNC_JOBS) >= MAX_SYNC_JOBS:
+            oldest = sorted(SYNC_JOBS.items(), key=lambda kv: kv[1]["started_at"])
+            for old_id, _ in oldest[: len(SYNC_JOBS) - MAX_SYNC_JOBS + 1]:
+                SYNC_JOBS.pop(old_id, None)
+        SYNC_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "pending",      # pending | running | completed | error
+            "phase": "En cola",
+            "total": 0,
+            "processed": 0,
+            "synced": 0,
+            "connections_done": 0,
+            "connections_total": 0,
+            "current_connection": None,
+            "results": [],
+            "error": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+        }
+    return job_id
+
+
+def _update_sync_job(job_id: str, **fields) -> None:
+    with SYNC_JOBS_LOCK:
+        job = SYNC_JOBS.get(job_id)
+        if job:
+            job.update(fields)
 
 
 class WazuhConnectionRequest(BaseModel):
@@ -408,18 +557,15 @@ def sync_connection(
     if not conn.is_active:
         raise HTTPException(status_code=400, detail="La conexión está inactiva")
 
-    raw_vulns = fetch_all_vulns(
-        conn.indexer_url, conn.wazuh_user, decrypt(conn.wazuh_password)
-    )
-
-    count = process_wazuh_vulnerabilities(db, conn.id, raw_vulns)
-    db.commit()
-    db.refresh(conn)
-
+    job_id = _start_sync_job([conn_id], db=db)
+    with SYNC_JOBS_LOCK:
+        job = dict(SYNC_JOBS.get(job_id, {}))
     return {
-        "synced": count,
+        "job_id": job_id,
+        "status": job.get("status", "running"),
         "connection": conn.name,
-        "sync_timestamp": conn.last_sync_at.isoformat() if conn.last_sync_at else None,
+        "synced": job.get("synced", 0),
+        "results": job.get("results", []),
     }
 
 
@@ -584,12 +730,15 @@ def _event_status_for_existing(existing: WazuhVulnerability) -> str:
     return "Detected"
 
 
-def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) -> int:
+def process_wazuh_vulnerabilities(
+    db: Session, conn_id: int, raw_vulns: list, progress_cb=None
+) -> int:
     conn = db.query(WazuhConnection).filter(WazuhConnection.id == conn_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail=CONNECTION_NOT_FOUND)
 
     count = 0
+    total = len(raw_vulns)
     seen_vuln_ids = set()
     scan_timestamp = datetime.now(timezone.utc)
     manager = _get_or_create_manager(db, conn)
@@ -597,7 +746,9 @@ def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) ->
     active_vulns_in_db = db.query(WazuhVulnerability).filter_by(connection_id=conn_id, status="ACTIVE").all()
     active_vuln_dict = {v.id: v for v in active_vulns_in_db}
 
-    for v in raw_vulns:
+    for idx, v in enumerate(raw_vulns):
+        if progress_cb and (idx % 200 == 0):
+            progress_cb(idx, total)
         agent = v.get("agent", {})
         osinfo = (v.get("host") or {}).get("os") or {}
         pkg = v.get("package", {})
@@ -639,8 +790,115 @@ def process_wazuh_vulnerabilities(db: Session, conn_id: int, raw_vulns: list) ->
 
     _resolve_missing_vulns(db, manager, active_vuln_dict, seen_vuln_ids, scan_timestamp)
 
+    if progress_cb:
+        progress_cb(total, total)
+
     conn.last_sync_at = scan_timestamp
     return count
+
+
+# ---------------------------------------------------------------------------
+# Worker de sincronización en segundo plano
+# ---------------------------------------------------------------------------
+def _run_sync_job(job_id: str, conn_ids: List[int], db=None) -> None:
+    """Ejecuta la sincronización.
+
+    Si se entrega ``db`` se usa esa sesión (modo inline/tests) y NO se cierra;
+    en caso contrario crea su propia sesión (modo hilo en segundo plano).
+    """
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+    _update_sync_job(
+        job_id,
+        status="running",
+        phase="Iniciando",
+        connections_total=len(conn_ids),
+    )
+    results = []
+    total_synced = 0
+    try:
+        for index, conn_id in enumerate(conn_ids):
+            conn = db.query(WazuhConnection).filter(WazuhConnection.id == conn_id).first()
+            if not conn:
+                continue
+
+            _update_sync_job(
+                job_id,
+                current_connection=conn.name,
+                connections_done=index,
+                phase=f"Descargando datos de {conn.name}",
+                processed=0,
+                total=0,
+            )
+
+            try:
+                raw_vulns = fetch_all_vulns(
+                    conn.indexer_url, conn.wazuh_user, decrypt(conn.wazuh_password)
+                )
+
+                _update_sync_job(
+                    job_id,
+                    phase=f"Procesando {conn.name}",
+                    total=len(raw_vulns),
+                )
+
+                def _cb(done, total, _name=conn.name):
+                    _update_sync_job(
+                        job_id,
+                        processed=done,
+                        total=total,
+                        phase=f"Procesando {_name} ({done}/{total})",
+                    )
+
+                count = process_wazuh_vulnerabilities(db, conn.id, raw_vulns, progress_cb=_cb)
+                db.commit()
+                total_synced += count
+                results.append({"connection": conn.name, "synced": count, "ok": True})
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                results.append({"connection": conn.name, "ok": False, "error": str(exc)})
+
+            _update_sync_job(
+                job_id,
+                connections_done=index + 1,
+                synced=total_synced,
+                results=list(results),
+            )
+
+        _update_sync_job(
+            job_id,
+            status="completed",
+            phase="Completado",
+            current_connection=None,
+            synced=total_synced,
+            results=list(results),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        _update_sync_job(
+            job_id,
+            status="error",
+            phase="Error",
+            error=str(exc),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        if own_session:
+            db.close()
+
+
+def _start_sync_job(conn_ids: List[int], db=None) -> str:
+    job_id = _new_sync_job()
+    _update_sync_job(job_id, connections_total=len(conn_ids))
+    if SYNC_INLINE:
+        # Ejecución síncrona usando la sesión de la petición (tests).
+        _run_sync_job(job_id, conn_ids, db=db)
+        return job_id
+    thread = threading.Thread(target=_run_sync_job, args=(job_id, conn_ids), daemon=True)
+    thread.start()
+    return job_id
 
 
 def _create_new_vuln(db, conn_id, agent, osinfo, pkg, vuln):
@@ -712,83 +970,270 @@ def _resolve_missing_vulns(db, manager, active_vuln_dict, seen_vuln_ids, scan_ti
 def sync_all_connections(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
+    """Lanza la sincronización en segundo plano y devuelve un job_id.
+
+    El frontend consulta /sync/status?job_id=... para mostrar la barra de
+    progreso y dispara un toast al completarse, sin bloquear la petición.
+    """
     conns = db.query(WazuhConnection).filter(WazuhConnection.is_active == True).all()
-    results = []
+    if not conns:
+        raise HTTPException(status_code=400, detail="No hay conexiones activas para sincronizar")
 
-    for conn in conns:
-        try:
-            raw_vulns = fetch_all_vulns(
-                conn.indexer_url,
-                conn.wazuh_user,
-                decrypt(conn.wazuh_password),
+    conn_ids = [c.id for c in conns]
+    job_id = _start_sync_job(conn_ids, db=db)
+    with SYNC_JOBS_LOCK:
+        job = dict(SYNC_JOBS.get(job_id, {}))
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "running"),
+        "connections_total": len(conn_ids),
+        "synced": job.get("synced", 0),
+        "results": job.get("results", []),
+    }
+
+
+@app.get("/sync/status")
+def sync_status(
+    job_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Devuelve el progreso de un job de sincronización.
+
+    Sin job_id devuelve el trabajo más reciente (para reanudar la barra de
+    progreso si el usuario recarga la página mientras sincroniza).
+    """
+    with SYNC_JOBS_LOCK:
+        if job_id:
+            job = SYNC_JOBS.get(job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Job no encontrado")
+            return dict(job)
+
+        if not SYNC_JOBS:
+            return {"status": "idle", "job_id": None}
+
+        latest = max(SYNC_JOBS.values(), key=lambda j: j["started_at"])
+        return dict(latest)
+
+
+def _split_csv(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+# Orden lógico de severidad para el ordenamiento server-side
+_SEVERITY_RANK = case(
+    (sql_func.lower(WazuhVulnerability.severity).in_(["critical", "critica", "crítica"]), 4),
+    (sql_func.lower(WazuhVulnerability.severity).in_(["high", "alta"]), 3),
+    (sql_func.lower(WazuhVulnerability.severity).in_(["medium", "media"]), 2),
+    else_=1,
+)
+
+_SORTABLE_COLUMNS = {
+    "cve_id": WazuhVulnerability.cve_id,
+    "agent_name": WazuhVulnerability.agent_name,
+    "package_name": WazuhVulnerability.package_name,
+    "score_base": WazuhVulnerability.score_base,
+    "first_seen": WazuhVulnerability.first_seen,
+    "last_seen": WazuhVulnerability.last_seen,
+    "connection_name": WazuhVulnerability.connection_id,
+    "severity": _SEVERITY_RANK,
+}
+
+
+def _apply_vuln_filters(
+    query,
+    connection_id,
+    agents,
+    cves,
+    packages,
+    severities,
+    status,
+    score_min,
+    score_max,
+    search,
+):
+    if connection_id:
+        query = query.filter(WazuhVulnerability.connection_id == connection_id)
+    if agents:
+        query = query.filter(WazuhVulnerability.agent_name.in_(agents))
+    if cves:
+        query = query.filter(WazuhVulnerability.cve_id.in_(cves))
+    if packages:
+        query = query.filter(WazuhVulnerability.package_name.in_(packages))
+    if severities:
+        lowered = [s.lower() for s in severities]
+        query = query.filter(sql_func.lower(WazuhVulnerability.severity).in_(lowered))
+    if status:
+        query = query.filter(WazuhVulnerability.status == status.upper())
+    if score_min is not None:
+        query = query.filter(WazuhVulnerability.score_base >= score_min)
+    if score_max is not None:
+        query = query.filter(WazuhVulnerability.score_base <= score_max)
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            or_(
+                WazuhVulnerability.cve_id.ilike(like),
+                WazuhVulnerability.agent_name.ilike(like),
+                WazuhVulnerability.package_name.ilike(like),
+                WazuhVulnerability.description.ilike(like),
             )
+        )
+    return query
 
-            count = process_wazuh_vulnerabilities(db, conn.id, raw_vulns)
-            db.commit()
 
-            results.append({"connection": conn.name, "synced": count, "ok": True})
-        except Exception as e:
-            db.rollback()
-            results.append({"connection": conn.name, "ok": False, "error": str(e)})
-
-    return results
+def _serialize_vuln(v: WazuhVulnerability, include_history: bool = False) -> dict:
+    data = {
+        "id": v.id,
+        "connection_id": v.connection_id,
+        "connection_name": v.connection.name if v.connection else None,
+        "status": v.status,
+        "agent_id": v.agent_id,
+        "agent_name": v.agent_name,
+        "os_full": v.os_full,
+        "os_platform": v.os_platform,
+        "os_version": v.os_version,
+        "package_name": v.package_name,
+        "package_version": v.package_version,
+        "package_type": v.package_type,
+        "package_arch": v.package_arch,
+        "cve_id": v.cve_id,
+        "severity": v.severity,
+        "score_base": float(v.score_base) if v.score_base is not None else None,
+        "score_version": v.score_version,
+        "detected_at": v.detected_at,
+        "published_at": v.published_at,
+        "description": v.description,
+        "reference": v.reference,
+        "scanner_vendor": v.scanner_vendor,
+        "first_seen": v.first_seen,
+        "last_seen": v.last_seen,
+    }
+    if include_history:
+        data["history"] = [
+            {
+                "id": h.id,
+                "action": h.action,
+                "details": h.details,
+                "timestamp": h.timestamp,
+            }
+            for h in sorted(v.history, key=lambda h: h.timestamp)
+        ]
+    return data
 
 
 @app.get("/vulns")
 def list_vulns(
+    connection_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    package_name: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    score_min: Optional[float] = None,
+    score_max: Optional[float] = None,
+    search: Optional[str] = None,
+    sort_by: str = "last_seen",
+    sort_order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
     limit: Optional[int] = None,
-    connection_id: int = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(WazuhVulnerability)
-    
-    if connection_id:
-        query = query.filter(WazuhVulnerability.connection_id == connection_id)
+    """Lista paginada y filtrada server-side (sin N+1, sin traer historial).
 
+    Toda la lógica de filtros, orden y paginación se ejecuta en la base de
+    datos. El historial detallado se obtiene aparte vía /vulns/{id}/history.
+    """
+    page = max(1, page)
+    page_size = max(1, min(page_size, 500))
+
+    query = db.query(WazuhVulnerability)
+    query = _apply_vuln_filters(
+        query,
+        connection_id,
+        _split_csv(agent_name),
+        _split_csv(cve_id),
+        _split_csv(package_name),
+        _split_csv(severity),
+        status,
+        score_min,
+        score_max,
+        search,
+    )
+
+    total = query.order_by(None).count()
+
+    sort_column = _SORTABLE_COLUMNS.get(sort_by, WazuhVulnerability.last_seen)
+    direction = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+    query = query.order_by(direction, WazuhVulnerability.id.asc())
+
+    # Compatibilidad: si se pasa ?limit se respeta como tope simple
     if limit is not None:
         query = query.limit(limit)
+        page_size = limit
+        page = 1
+    else:
+        query = query.offset((page - 1) * page_size).limit(page_size)
 
     vulns = query.all()
+    items = [_serialize_vuln(v) for v in vulns]
 
-    return [
-        {
-            "id": v.id,
-            "connection_id": v.connection_id,
-            "connection_name": v.connection.name if v.connection else None,
-            "status": v.status,
-            "agent_id": v.agent_id,
-            "agent_name": v.agent_name,
-            "os_full": v.os_full,
-            "os_platform": v.os_platform,
-            "os_version": v.os_version,
-            "package_name": v.package_name,
-            "package_version": v.package_version,
-            "package_type": v.package_type,
-            "package_arch": v.package_arch,
-            "cve_id": v.cve_id,
-            "severity": v.severity,
-            "score_base": float(v.score_base) if v.score_base else None,
-            "score_version": v.score_version,
-            "detected_at": v.detected_at,
-            "published_at": v.published_at,
-            "description": v.description,
-            "reference": v.reference,
-            "scanner_vendor": v.scanner_vendor,
-            "first_seen": v.first_seen,
-            "last_seen": v.last_seen,
-            "history": [
-                {
-                    "id": h.id,
-                    "action": h.action,
-                    "details": h.details,
-                    "timestamp": h.timestamp,
-                }
-                for h in sorted(v.history, key=lambda h: h.timestamp)
-            ],
-        }
-        for v in vulns
-    ]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": math.ceil(total / page_size) if page_size else 1,
+    }
+
+
+@app.get("/vulns/filter-options")
+def vuln_filter_options(
+    connection_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Opciones de filtro precalculadas (DISTINCT en DB).
+
+    Evita descargar 20k filas solo para poblar los dropdowns de la UI.
+    """
+    base = db.query  # alias for readability
+
+    def distinct_values(column):
+        q = db.query(column).filter(column.isnot(None), column != "")
+        if connection_id:
+            q = q.filter(WazuhVulnerability.connection_id == connection_id)
+        return [row[0] for row in q.distinct().order_by(column.asc()).all()]
+
+    severities = distinct_values(WazuhVulnerability.severity)
+
+    return {
+        "agents": distinct_values(WazuhVulnerability.agent_name),
+        "cves": distinct_values(WazuhVulnerability.cve_id),
+        "packages": distinct_values(WazuhVulnerability.package_name),
+        "severities": [s.upper() for s in severities],
+    }
+
+
+@app.get("/vulns/{vuln_id}/history")
+def vuln_history(
+    vuln_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    vuln = (
+        db.query(WazuhVulnerability)
+        .options(selectinload(WazuhVulnerability.history))
+        .filter(WazuhVulnerability.id == vuln_id)
+        .first()
+    )
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    return _serialize_vuln(vuln, include_history=True)
 
 
 def _db_dialect(db: Session) -> str:
@@ -924,4 +1369,249 @@ def vulnerability_evolution_summary(
         "assets": assets_query.count(),
         "detection_events": detections_query.count(),
         "last_sync_at": last_sync_at.isoformat() if last_sync_at else None,
+    }
+
+
+# Configuración de periodos para la línea de trazabilidad
+_PERIOD_CONFIG = {
+    "24h": {"delta": timedelta(days=1), "bucket": "1 hour"},
+    "7d": {"delta": timedelta(days=7), "bucket": "1 day"},
+    "30d": {"delta": timedelta(days=30), "bucket": "1 day"},
+    "90d": {"delta": timedelta(days=90), "bucket": "1 week"},
+    "all": {"delta": timedelta(days=3650), "bucket": "1 week"},
+}
+
+
+def _traceability_timeline_fallback(db, connection_id, start, end):
+    """Agregación en Python para motores sin TimescaleDB (tests con SQLite)."""
+    query = db.query(VulnerabilityDetection).filter(
+        VulnerabilityDetection.timestamp >= start,
+        VulnerabilityDetection.timestamp <= end,
+    )
+    query = _filter_detections_by_connection(query, connection_id)
+
+    buckets = {}
+    for detection in query.all():
+        bucket = _week_start(detection.timestamp).isoformat()
+        slot = buckets.setdefault(bucket, {"nuevas": 0, "reemergidas": 0, "remediadas": 0})
+        if detection.status == "Detected":
+            slot["nuevas"] += 1
+        elif detection.status == "Re-emerged":
+            slot["reemergidas"] += 1
+        elif detection.status == "Resolved":
+            slot["remediadas"] += 1
+
+    return [
+        {"bucket": bucket, **counts}
+        for bucket, counts in sorted(buckets.items(), key=lambda item: item[0])
+    ]
+
+
+@app.get("/vulns/evolution/timeline")
+def traceability_timeline(
+    period: str = "30d",
+    connection_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Línea de trazabilidad: nuevas vs. reemergidas vs. remediadas por bucket.
+
+    Procesamiento temporal hecho 100% en backend. Sin filtros extra usa el
+    stored procedure sp_traceability_timeline; con filtros de agente/CVE usa
+    una consulta parametrizada equivalente (ambas sobre la hypertable).
+    """
+    config = _PERIOD_CONFIG.get(period, _PERIOD_CONFIG["30d"])
+    end = datetime.now(timezone.utc)
+    start = end - config["delta"]
+    agents = _split_csv(agent_name)
+    cves = _split_csv(cve_id)
+
+    if _db_dialect(db) != "postgresql":
+        return {
+            "period": period,
+            "bucket": config["bucket"],
+            "points": _traceability_timeline_fallback(db, connection_id, start, end),
+        }
+
+    if not agents and not cves:
+        rows = db.execute(
+            text("""
+                SELECT bucket, nuevas, reemergidas, remediadas
+                FROM sp_traceability_timeline(
+                    :connection_id, CAST(:bucket AS INTERVAL), :start, :end
+                )
+            """),
+            {
+                "connection_id": connection_id,
+                "bucket": config["bucket"],
+                "start": start,
+                "end": end,
+            },
+        ).mappings().all()
+    else:
+        rows = db.execute(
+            text("""
+                SELECT
+                    time_bucket(CAST(:bucket AS INTERVAL), vd.timestamp) AS bucket,
+                    count(*) FILTER (WHERE vd.status = 'Detected')   AS nuevas,
+                    count(*) FILTER (WHERE vd.status = 'Re-emerged') AS reemergidas,
+                    count(*) FILTER (WHERE vd.status = 'Resolved')   AS remediadas
+                FROM vulnerability_detections vd
+                JOIN assets a   ON a.id = vd.asset_id
+                JOIN managers m ON m.id = a.manager_id
+                WHERE vd.timestamp >= :start AND vd.timestamp <= :end
+                  AND (:connection_id IS NULL OR m.legacy_connection_id = :connection_id)
+                  AND (:has_agents = FALSE OR a.hostname = ANY(:agents))
+                  AND (:has_cves = FALSE OR vd.cve_id = ANY(:cves))
+                GROUP BY bucket
+                ORDER BY bucket
+            """),
+            {
+                "connection_id": connection_id,
+                "bucket": config["bucket"],
+                "start": start,
+                "end": end,
+                "has_agents": bool(agents),
+                "agents": agents,
+                "has_cves": bool(cves),
+                "cves": cves,
+            },
+        ).mappings().all()
+
+    return {
+        "period": period,
+        "bucket": config["bucket"],
+        "points": [
+            {
+                "bucket": row["bucket"].isoformat() if row["bucket"] else None,
+                "nuevas": row["nuevas"],
+                "reemergidas": row["reemergidas"],
+                "remediadas": row["remediadas"],
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.get("/vulns/evolution/timeline-details")
+def traceability_timeline_details(
+    bucket_start: datetime,
+    bucket_end: datetime,
+    connection_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Detalle (drill-down) de los eventos de detección dentro de un bucket.
+
+    Se carga bajo demanda al abrir un slot, de modo que la línea de tiempo
+    nunca descarga los 20k+ registros completos.
+    """
+    limit = max(1, min(limit, 2000))
+
+    query = (
+        db.query(
+            VulnerabilityDetection.timestamp.label("timestamp"),
+            VulnerabilityDetection.status.label("status"),
+            VulnerabilityDetection.cve_id.label("cve_id"),
+            VulnerabilityDetection.package_name.label("package_name"),
+            VulnerabilityDetection.package_version.label("package_version"),
+            Asset.hostname.label("hostname"),
+            Manager.nombre.label("connection_name"),
+            VulnerabilityCatalog.severity.label("severity"),
+        )
+        .join(Asset, Asset.id == VulnerabilityDetection.asset_id)
+        .join(Manager, Manager.id == Asset.manager_id)
+        .outerjoin(
+            VulnerabilityCatalog,
+            VulnerabilityCatalog.cve_id == VulnerabilityDetection.cve_id,
+        )
+        .filter(
+            VulnerabilityDetection.timestamp >= bucket_start,
+            VulnerabilityDetection.timestamp <= bucket_end,
+        )
+    )
+
+    if connection_id:
+        query = query.filter(Manager.legacy_connection_id == connection_id)
+    agents = _split_csv(agent_name)
+    if agents:
+        query = query.filter(Asset.hostname.in_(agents))
+    cves = _split_csv(cve_id)
+    if cves:
+        query = query.filter(VulnerabilityDetection.cve_id.in_(cves))
+
+    rows = query.order_by(VulnerabilityDetection.timestamp.desc()).limit(limit).all()
+
+    status_map = {"Resolved": "RESOLVED"}
+    label_map = {
+        "Detected": "DETECTED",
+        "Re-emerged": "REOPENED",
+        "Resolved": "RESOLVED",
+    }
+    return [
+        {
+            "id": f"{row.cve_id}-{row.hostname}-{row.timestamp.isoformat()}",
+            "connection_name": row.connection_name,
+            "agent_name": row.hostname,
+            "cve_id": row.cve_id,
+            "severity": row.severity,
+            "package_name": row.package_name,
+            "package_version": row.package_version,
+            "timeline_event_at": row.timestamp,
+            "timeline_event_label": label_map.get(row.status, row.status),
+            "detected_at": None,
+            "first_seen": row.timestamp,
+            "last_seen": row.timestamp,
+            "status": status_map.get(row.status, "ACTIVE"),
+            "resolved_at": row.timestamp if row.status == "Resolved" else None,
+        }
+        for row in rows
+    ]
+
+
+@app.get("/vulns/evolution/traceability-summary")
+def traceability_summary(
+    connection_id: Optional[int] = None,
+    new_window_days: int = 7,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resumen del algoritmo de trazabilidad: Nuevas / Persistentes / Remediadas."""
+    if _db_dialect(db) == "postgresql":
+        row = db.execute(
+            text("""
+                SELECT nuevas, persistentes, remediadas, total_activas
+                FROM sp_traceability_summary(
+                    :connection_id, CAST(:window AS INTERVAL)
+                )
+            """),
+            {"connection_id": connection_id, "window": f"{new_window_days} days"},
+        ).mappings().first()
+        return {
+            "nuevas": row["nuevas"] if row else 0,
+            "persistentes": row["persistentes"] if row else 0,
+            "remediadas": row["remediadas"] if row else 0,
+            "total_activas": row["total_activas"] if row else 0,
+        }
+
+    # Fallback ORM
+    cutoff = datetime.now(timezone.utc) - timedelta(days=new_window_days)
+    active_q = db.query(WazuhVulnerability).filter(WazuhVulnerability.status == "ACTIVE")
+    resolved_q = db.query(WazuhVulnerability).filter(WazuhVulnerability.status == "RESOLVED")
+    if connection_id:
+        active_q = active_q.filter(WazuhVulnerability.connection_id == connection_id)
+        resolved_q = resolved_q.filter(WazuhVulnerability.connection_id == connection_id)
+
+    nuevas = active_q.filter(WazuhVulnerability.first_seen >= cutoff).count()
+    total_activas = active_q.count()
+    return {
+        "nuevas": nuevas,
+        "persistentes": total_activas - nuevas,
+        "remediadas": resolved_q.count(),
+        "total_activas": total_activas,
     }

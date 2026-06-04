@@ -10,6 +10,8 @@
     <div v-if="statusError" class="status-banner status-error">{{ statusError }}</div>
     <div v-if="statusWarning" class="status-banner status-warning">{{ statusWarning }}</div>
 
+    <div v-if="loading" class="tl-loading-bar"><div class="tl-loading-fill"></div></div>
+
     <TimelineFilters
       :connections="connections"
       :agent-options="agentOpts"
@@ -73,6 +75,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import wazuhService from '../../application/services/wazuhService'
+import vulnService from '../../application/services/vulnService'
 import useTimelineData from './timeline/useTimelineData'
 import useTimelineNavigation from './timeline/useTimelineNavigation'
 import { fmtYear } from './timeline/timelineFormatters'
@@ -119,15 +122,12 @@ const {
   errorMessage,
   warningMessage,
   build,
-  fetchConnectionVulns
+  fetchSlotDetails
 } = useTimelineData({
   selectedConnection,
   selectedAgents,
   selectedVulns,
-  period,
-  customDate,
-  activeZoom: navigation.activeZoom,
-  getConnectionName
+  period
 })
 
 allSlotsRef = allSlots
@@ -173,17 +173,10 @@ const onConnectionChange = async () => {
   if (!selectedConnection.value) return
 
   try {
-    const data = await fetchConnectionVulns()
-    const agents = new Set()
-    const vulns = new Set()
-
-    data.forEach(vuln => {
-      if (vuln.agent_name) agents.add(vuln.agent_name)
-      if (vuln.cve_id) vulns.add(vuln.cve_id)
-    })
-
-    agentOpts.value = Array.from(agents).sort()
-    vulnOpts.value = Array.from(vulns).sort()
+    // Opciones precalculadas en el backend (rápido, sin descargar 20k filas)
+    const res = await vulnService.getFilterOptions(selectedConnection.value)
+    agentOpts.value = res.data?.agents || []
+    vulnOpts.value = res.data?.cves || []
   } catch (error) {
     console.error(error)
     errorBanner.value = 'No se pudieron cargar agentes y CVEs para la conexion seleccionada.'
@@ -201,9 +194,22 @@ const buildTimeline = async () => {
   }
 }
 
-const openModal = slot => {
-  selectedEvent.value = slot
+const modalLoading = ref(false)
+
+const openModal = async slot => {
+  // Abre el modal y carga el detalle del bucket bajo demanda
+  selectedEvent.value = { ...slot, details: [] }
   modalOpen.value = true
+  modalLoading.value = true
+  try {
+    const details = await fetchSlotDetails(slot)
+    selectedEvent.value = { ...slot, details }
+  } catch (error) {
+    console.error(error)
+    selectedEvent.value = { ...slot, details: [] }
+  } finally {
+    modalLoading.value = false
+  }
 }
 
 onMounted(async () => {
@@ -257,5 +263,25 @@ const statusWarning = computed(() => warningMessage.value)
 
 .empty-center p {
   color: var(--text-muted);
+}
+
+/* Barra de carga indeterminada de la línea de tiempo */
+.tl-loading-bar {
+  height: 4px;
+  width: 100%;
+  background: var(--bg-hover);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.tl-loading-fill {
+  height: 100%;
+  width: 35%;
+  background: var(--primary);
+  border-radius: 999px;
+  animation: tl-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes tl-indeterminate {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
 }
 </style>

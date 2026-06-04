@@ -12,12 +12,24 @@
           <span>Último sync: <strong>{{ timeAgo(evolutionSummary.last_sync_at) }}</strong></span>
           <span class="sync-date-full">{{ formatDate(evolutionSummary.last_sync_at) }}</span>
         </div>
-        <button class="btn btn-primary" @click="syncVulns" :disabled="syncing">
-          <svg v-if="syncing" class="spin" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
+        <button class="btn btn-primary" @click="onSyncClick" :disabled="isSyncing">
+          <svg v-if="isSyncing" class="spin" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
           <svg v-else xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-9.5l1.75 1.93"></path></svg>
-          {{ syncing ? 'Sincronizando con Wazuh...' : 'Forzar Sincronización' }}
+          {{ isSyncing ? 'Sincronizando en segundo plano...' : 'Forzar Sincronización' }}
         </button>
       </div>
+    </div>
+
+    <!-- Barra de progreso de sincronización (segundo plano) -->
+    <div v-if="isSyncing" class="sync-progress card fade-in">
+      <div class="sync-progress-head">
+        <span class="sync-progress-phase">{{ phaseLabel }}</span>
+        <span class="sync-progress-pct">{{ progressPct }}%</span>
+      </div>
+      <div class="sync-progress-track">
+        <div class="sync-progress-fill" :style="{ width: progressPct + '%' }"></div>
+      </div>
+      <p class="sync-progress-hint">Puedes seguir navegando; te avisaremos cuando termine.</p>
     </div>
 
     <!-- Error/Loading states -->
@@ -47,6 +59,25 @@
         <span class="metric-label">Timestamp Wazuh (último sync)</span>
         <strong class="sync-ts-value">{{ evolutionSummary.last_sync_at ? timeAgo(evolutionSummary.last_sync_at) : 'Sin sincronizar' }}</strong>
         <span v-if="evolutionSummary.last_sync_at" class="metric-sub">{{ formatDate(evolutionSummary.last_sync_at) }}</span>
+      </div>
+    </div>
+
+    <!-- Trazabilidad: Nuevas vs Persistentes vs Remediadas -->
+    <div v-if="traceability" class="traceability-grid">
+      <div class="trace-tile trace-new">
+        <span class="trace-label">Nuevas (≤7 días)</span>
+        <strong>{{ traceability.nuevas }}</strong>
+        <span class="trace-sub">Detectadas recientemente</span>
+      </div>
+      <div class="trace-tile trace-persistent">
+        <span class="trace-label">Persistentes</span>
+        <strong>{{ traceability.persistentes }}</strong>
+        <span class="trace-sub">Activas sin remediar</span>
+      </div>
+      <div class="trace-tile trace-resolved">
+        <span class="trace-label">Remediadas</span>
+        <strong>{{ traceability.remediadas }}</strong>
+        <span class="trace-sub">Ya no reportadas</span>
       </div>
     </div>
 
@@ -84,7 +115,7 @@
     </div>
 
     <!-- Filter Toggle Bar (minimalista) -->
-    <div v-if="!loading && vulns.length > 0" class="filter-toggle-bar">
+    <div v-if="totalItems > 0 || showFilters" class="filter-toggle-bar">
       <button class="btn-filter-toggle" @click="showFilters = !showFilters">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
@@ -215,7 +246,7 @@
       <div class="table-wrapper">
         <div v-if="totalPages > 1" class="pagination-header">
           <span class="pagination-info">
-            Mostrando {{ (currentPage - 1) * itemsPerPage + 1 }} - {{ Math.min(currentPage * itemsPerPage, sortedVulns.length) }} de {{ sortedVulns.length }} vulnerabilidades
+            Mostrando {{ (currentPage - 1) * itemsPerPage + 1 }} - {{ Math.min(currentPage * itemsPerPage, totalItems) }} de {{ totalItems }} vulnerabilidades
           </span>
           <div class="pagination-nav">
             <button class="btn-icon-page" :disabled="currentPage === 1" @click="jumpBackward" title="Retroceder 5 páginas" aria-label="Retroceder 5 páginas">
@@ -311,7 +342,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="vuln in paginatedVulns" :key="vuln.id">
+            <tr v-for="vuln in vulns" :key="vuln.id">
               <td>{{ vuln.connection_name || '-' }}</td>
               <td>
                 <span :class="getSeverityClass(vuln.severity)">
@@ -415,19 +446,24 @@
 import { ref, onMounted, computed, watch, reactive } from 'vue'
 import vulnService from '../../application/services/vulnService'
 import wazuhService from '../../application/services/wazuhService'
+import { useSyncJob } from '../composables/useSyncJob'
 
-const vulns = ref([])
+const vulns = ref([])          // Solo la página actual (server-side)
+const totalItems = ref(0)
 const loading = ref(true)
-const syncing = ref(false)
 const error = ref('')
 const evolutionSummary = ref(null)
+const traceability = ref(null)
 const weeklyTrend = ref([])
 const topAssets = ref([])
 const sortKey = ref('last_seen')
 const sortOrder = ref('desc')
 const showFilters = ref(false)
 
-// Paginación
+// Sincronización en segundo plano + progreso + toast
+const { isSyncing, progressPct, phaseLabel, startSync, resumeIfActive, onDone } = useSyncJob()
+
+// Paginación (server-side)
 const currentPage = ref(1)
 const itemsPerPage = 50
 const pageJump = 10
@@ -451,7 +487,7 @@ const scoreMax = ref('')
 const search = reactive({ agent: '', vuln: '', package: '' })
 const dropdowns = reactive({ agents: false, vulns: false, packages: false, severity: false })
 
-// Filtered lists for search
+// Filtered lists for search (búsqueda dentro del dropdown, sobre opciones precargadas)
 const filteredAgents = computed(() =>
   agentOptions.value.filter(agent => agent.toLowerCase().includes(search.agent.toLowerCase()))
 )
@@ -477,111 +513,8 @@ const getSeverityLevel = (s) => {
   return 1 // low or unknown
 }
 
-const compareValues = (a, b, key) => {
-  let aVal = a[key]
-  let bVal = b[key]
-
-  if (key === 'first_seen' || key === 'last_seen') {
-    aVal = aVal ? new Date(aVal).getTime() : 0
-    bVal = bVal ? new Date(bVal).getTime() : 0
-    return aVal - bVal
-  } else if (key === 'severity') {
-    aVal = getSeverityLevel(aVal)
-    bVal = getSeverityLevel(bVal)
-    return aVal - bVal
-  } else {
-    aVal = aVal || ''
-    bVal = bVal || ''
-    if (typeof aVal === 'string') {
-      return aVal.toLowerCase().localeCompare(bVal.toLowerCase())
-    }
-    return aVal - bVal
-  }
-}
-
-
-const updateFilterOptions = () => {
-  const agents = new Set()
-  const vulnIds = new Set()
-  const packages = new Set()
-  const severities = new Set()
-
-  vulns.value.forEach(vuln => {
-    if (vuln.agent_name) agents.add(vuln.agent_name)
-    if (vuln.cve_id) vulnIds.add(vuln.cve_id)
-    if (vuln.package_name) packages.add(vuln.package_name)
-    if (vuln.severity) severities.add(vuln.severity.toUpperCase())
-  })
-
-  agentOptions.value = Array.from(agents).sort()
-  vulnOptions.value = Array.from(vulnIds).sort()
-  packageOptions.value = Array.from(packages).sort()
-  severityOptions.value = Array.from(severities).sort((a, b) => {
-    const levelA = getSeverityLevel(a.toLowerCase())
-    const levelB = getSeverityLevel(b.toLowerCase())
-    return levelB - levelA
-  })
-}
-
-const matchesConnection = (vuln) => 
-  !selectedConnection.value || vuln.connection_id === selectedConnection.value
-
-const matchesAgent = (vuln) => 
-  selectedAgents.value.length === 0 || selectedAgents.value.includes(vuln.agent_name)
-
-const matchesVuln = (vuln) => 
-  selectedVulns.value.length === 0 || selectedVulns.value.includes(vuln.cve_id)
-
-const matchesPackage = (vuln) => 
-  selectedPackages.value.length === 0 || selectedPackages.value.includes(vuln.package_name)
-
-const matchesSeverity = (vuln) => {
-  if (selectedSeverities.value.length === 0) return true
-  const vulnSeverity = (vuln.severity || 'UNKNOWN').toUpperCase()
-  return selectedSeverities.value.includes(vulnSeverity)
-}
-
-const matchesScore = (vuln) => {
-  if (scoreMin.value === '' && scoreMax.value === '') return true
-  
-  const score = vuln.score_base
-  if (score === null || score === undefined) return false
-  
-  const minOk = scoreMin.value === '' || score >= scoreMin.value
-  const maxOk = scoreMax.value === '' || score <= scoreMax.value
-  
-  return minOk && maxOk
-}
-
-const filteredVulns = computed(() => {
-  return vulns.value.filter(vuln => {
-    return matchesConnection(vuln) &&
-           matchesAgent(vuln) &&
-           matchesVuln(vuln) &&
-           matchesPackage(vuln) &&
-           matchesSeverity(vuln) &&
-           matchesScore(vuln)
-  })
-})
-
-const sortedVulns = computed(() => {
-  if (!sortKey.value) return filteredVulns.value
-  return [...filteredVulns.value].sort((a, b) => {
-    const cmp = compareValues(a, b, sortKey.value)
-    return sortOrder.value === 'asc' ? cmp : -cmp
-  })
-})
-
-// === LOGICA DE PAGINACION ===
-const totalPages = computed(() => {
-  return Math.ceil(sortedVulns.value.length / itemsPerPage)
-})
-
-const paginatedVulns = computed(() => {
-  const start = (currentPage.value - 1) * itemsPerPage
-  const end = start + itemsPerPage
-  return sortedVulns.value.slice(start, end)
-})
+// === PAGINACIÓN SERVER-SIDE ===
+const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / itemsPerPage)))
 
 const visiblePages = computed(() => {
   const pages = []
@@ -594,7 +527,7 @@ const visiblePages = computed(() => {
     return pages
   }
 
-  const middleSlots = maxNumericButtons - 2 // Reservamos 1 y ultima pagina.
+  const middleSlots = maxNumericButtons - 2
   pages.push(1)
 
   let start = Math.max(2, current - Math.floor(middleSlots / 2))
@@ -613,33 +546,62 @@ const visiblePages = computed(() => {
   return pages
 })
 
-const nextPage = () => {
-  if (currentPage.value < totalPages.value) currentPage.value++
+const nextPage = () => { if (currentPage.value < totalPages.value) currentPage.value++ }
+const prevPage = () => { if (currentPage.value > 1) currentPage.value-- }
+const jumpBackward = () => { currentPage.value = Math.max(1, currentPage.value - pageJump) }
+const jumpForward = () => { currentPage.value = Math.min(totalPages.value, currentPage.value + pageJump) }
+
+// === FETCH SERVER-SIDE ===
+const buildParams = () => ({
+  page: currentPage.value,
+  pageSize: itemsPerPage,
+  connectionId: selectedConnection.value || null,
+  agents: selectedAgents.value,
+  cves: selectedVulns.value,
+  packages: selectedPackages.value,
+  severities: selectedSeverities.value,
+  scoreMin: scoreMin.value,
+  scoreMax: scoreMax.value,
+  sortBy: sortKey.value || 'last_seen',
+  sortOrder: sortOrder.value || 'desc',
+})
+
+const fetchVulns = async () => {
+  loading.value = true
+  error.value = ''
+  try {
+    const res = await vulnService.getVulns(buildParams())
+    const data = res.data || {}
+    vulns.value = Array.isArray(data.items) ? data.items : []
+    totalItems.value = data.total || 0
+  } catch (err) {
+    console.error('Error fetching vulns:', err)
+    error.value = 'No se pudieron cargar las vulnerabilidades.'
+    vulns.value = []
+    totalItems.value = 0
+  } finally {
+    loading.value = false
+  }
 }
 
-const prevPage = () => {
-  if (currentPage.value > 1) currentPage.value--
+// Debounce para filtros (evita disparar una petición por cada tecla/clic)
+let filterTimer = null
+const refetchFromFilters = () => {
+  currentPage.value = 1
+  clearTimeout(filterTimer)
+  filterTimer = setTimeout(fetchVulns, 300)
 }
 
-const jumpBackward = () => {
-  currentPage.value = Math.max(1, currentPage.value - pageJump)
-}
+// Recargar al cambiar página o el orden (inmediato)
+watch(currentPage, fetchVulns)
+watch([sortKey, sortOrder], () => { currentPage.value = 1; fetchVulns() })
 
-const jumpForward = () => {
-  currentPage.value = Math.min(totalPages.value, currentPage.value + pageJump)
-}
-
-// Al filtrar o ordenar volvemos a la pagina 1
-watch(selectedConnection, () => { currentPage.value = 1 })
-watch(selectedAgents, () => { currentPage.value = 1 })
-watch(selectedVulns, () => { currentPage.value = 1 })
-watch(selectedPackages, () => { currentPage.value = 1 })
-watch(selectedSeverities, () => { currentPage.value = 1 })
-watch(scoreMin, () => { currentPage.value = 1 })
-watch(scoreMax, () => { currentPage.value = 1 })
-watch(sortKey, () => { currentPage.value = 1 })
-watch(sortOrder, () => { currentPage.value = 1 })
-
+// Recargar (con debounce) al cambiar filtros
+watch(
+  [selectedAgents, selectedVulns, selectedPackages, selectedSeverities, scoreMin, scoreMax],
+  refetchFromFilters,
+  { deep: true }
+)
 
 const sortBy = (key) => {
   if (sortKey.value !== key) {
@@ -648,19 +610,36 @@ const sortBy = (key) => {
   } else if (sortOrder.value === 'asc') {
     sortOrder.value = 'desc'
   } else {
-    sortKey.value = ''
-    sortOrder.value = ''
+    sortKey.value = 'last_seen'
+    sortOrder.value = 'desc'
+  }
+}
+
+const fetchFilterOptions = async () => {
+  try {
+    const res = await vulnService.getFilterOptions(selectedConnection.value || null)
+    const data = res.data || {}
+    agentOptions.value = data.agents || []
+    vulnOptions.value = data.cves || []
+    packageOptions.value = data.packages || []
+    severityOptions.value = (data.severities || []).sort(
+      (a, b) => getSeverityLevel(b.toLowerCase()) - getSeverityLevel(a.toLowerCase())
+    )
+  } catch (err) {
+    console.error('Error fetching filter options:', err)
   }
 }
 
 const onConnectionChange = () => {
-  // When connection changes, clear dependent filters
   selectedAgents.value = []
   selectedVulns.value = []
   selectedPackages.value = []
   selectedSeverities.value = []
   scoreMin.value = ''
   scoreMax.value = ''
+  currentPage.value = 1
+  fetchFilterOptions()
+  fetchVulns()
   fetchEvolution()
 }
 
@@ -672,24 +651,9 @@ const clearFilters = () => {
   selectedSeverities.value = []
   scoreMin.value = ''
   scoreMax.value = ''
-}
-
-const fetchVulns = async () => {
-  loading.value = true
-  error.value = ''
-  try {
-    const res = await vulnService.getVulns()
-    if (res.data && res.data.length > 0) {
-      vulns.value = res.data
-      updateFilterOptions()
-    } else {
-      vulns.value = []
-    }
-  } catch (err) {
-    console.error('Error fetching vulns:', err)
-  } finally {
-    loading.value = false
-  }
+  currentPage.value = 1
+  fetchFilterOptions()
+  fetchVulns()
 }
 
 const fetchConnections = async () => {
@@ -709,32 +673,24 @@ const evolutionParams = () => {
 const fetchEvolution = async () => {
   try {
     const params = evolutionParams()
-    const [summaryRes, weeklyRes, topRes] = await Promise.all([
+    const [summaryRes, weeklyRes, topRes, traceRes] = await Promise.all([
       vulnService.getEvolutionSummary(params),
       vulnService.getWeeklyTrend(params),
-      vulnService.getTopAssets({ ...params, days: 7, limit: 5 })
+      vulnService.getTopAssets({ ...params, days: 7, limit: 5 }),
+      vulnService.getTraceabilitySummary(params),
     ])
 
     evolutionSummary.value = summaryRes?.data || null
     weeklyTrend.value = Array.isArray(weeklyRes?.data) ? weeklyRes.data : []
     topAssets.value = Array.isArray(topRes?.data) ? topRes.data : []
+    traceability.value = traceRes?.data || null
   } catch (err) {
     console.error('Error fetching evolution metrics:', err)
   }
 }
 
-const syncVulns = async () => {
-  syncing.value = true
-  error.value = ''
-  try {
-    await vulnService.syncVulns()
-    await fetchVulns()
-    await fetchEvolution()
-  } catch (err) {
-    error.value = 'Error durante la sincronización con Wazuh. Verifica tu configuración en Admin Wazuh.'
-  } finally {
-    syncing.value = false
-  }
+const onSyncClick = () => {
+  startSync()
 }
 
 const formatDate = (dateString) => {
@@ -829,8 +785,19 @@ const timeAgo = (date) => {
 
 onMounted(() => {
   fetchConnections()
+  fetchFilterOptions()
   fetchVulns()
   fetchEvolution()
+
+  // Reanuda la barra de progreso si ya había una sync en curso
+  resumeIfActive()
+
+  // Cuando termina una sincronización en segundo plano, refresca los datos
+  onDone(() => {
+    fetchFilterOptions()
+    fetchVulns()
+    fetchEvolution()
+  })
 })
 </script>
 
@@ -1569,18 +1536,93 @@ th {
   }
 }
 
+/* Barra de progreso de sincronización */
+.sync-progress {
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+.sync-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.sync-progress-phase {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.sync-progress-pct {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+.sync-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.sync-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 0.4s ease;
+}
+.sync-progress-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Cards de trazabilidad */
+.traceability-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.trace-tile {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  border-radius: var(--radius);
+  padding: 1rem;
+  border-left: 3px solid var(--text-muted);
+}
+.trace-tile strong {
+  display: block;
+  color: var(--text-main);
+  font-size: 1.8rem;
+  line-height: 1;
+  margin: 0.35rem 0;
+}
+.trace-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.trace-sub {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.trace-new { border-left-color: #dc2626; }
+.trace-persistent { border-left-color: #d97706; }
+.trace-resolved { border-left-color: #16a34a; }
+
 @media (max-width: 1100px) {
   .evolution-grid,
-  .evolution-panels {
+  .evolution-panels,
+  .traceability-grid {
     grid-template-columns: 1fr;
   }
 
-  .filter-row { 
-    grid-template-columns: 1fr 1fr; 
+  .filter-row {
+    grid-template-columns: 1fr 1fr;
   }
-  .f-group { 
-    border-right: none; 
-    border-bottom: 1px solid var(--border); 
+  .f-group {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
   }
 }
 </style>
