@@ -2,12 +2,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --shell /usr/sbin/nologin appuser
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# La API usa JWT HS256; ecdsa queda como dependencia transitiva no usada y Trivy la reporta vulnerable.
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall --yes ecdsa
 
-COPY . .
+COPY --chown=appuser:appuser . .
+
+USER appuser
 
 ENV UVICORN_HOST=0.0.0.0
 ENV UVICORN_PORT=8000

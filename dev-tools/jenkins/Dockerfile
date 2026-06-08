@@ -4,7 +4,7 @@ USER root
 
 # Instalar dependencias básicas
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \

@@ -6,121 +6,59 @@ import vulnService from '@/application/services/vulnService'
 import TimelineFilters from '@/presentation/views/timeline/components/TimelineFilters.vue'
 import TimelineDetailModal from '@/presentation/views/timeline/components/TimelineDetailModal.vue'
 
-// Mock services
 vi.mock('@/application/services/wazuhService', () => ({
   default: {
-    getConnections: vi.fn(),
-    getAgents: vi.fn()
+    getConnections: vi.fn()
   }
 }))
 
 vi.mock('@/application/services/vulnService', () => ({
   default: {
-    getVulns: vi.fn()
+    getFilterOptions: vi.fn(),
+    getTraceabilityTimeline: vi.fn(),
+    getTimelineDetails: vi.fn()
   }
 }))
 
 describe('Timeline.vue', () => {
+  const points = [
+    { bucket: '2026-03-07T00:00:00Z', nuevas: 2, reemergidas: 0, remediadas: 0 },
+    { bucket: '2026-03-08T00:00:00Z', nuevas: 0, reemergidas: 1, remediadas: 1 }
+  ]
+
   beforeEach(() => {
     vi.clearAllMocks()
-
-    // Mock wazuh service
     wazuhService.getConnections.mockResolvedValue({
       data: [
-        { id: 1, name: 'Connection 1', api_url: 'http://test1' },
-        { id: 2, name: 'Connection 2', api_url: 'http://test2' }
+        { id: '1', name: 'Connection 1', api_url: 'http://test1' },
+        { id: '2', name: 'Connection 2', api_url: 'http://test2' }
       ]
     })
-
-    wazuhService.getAgents.mockResolvedValue({
-      data: [
-        { id: '001', name: 'Agent 1' },
-        { id: '002', name: 'Agent 2' }
-      ]
+    vulnService.getFilterOptions.mockResolvedValue({
+      data: { agents: ['Agent 1', 'Agent 2'], cves: ['CVE-001', 'CVE-002'] }
     })
-
-    vulnService.getVulns.mockResolvedValue({
-      data: []
+    vulnService.getTraceabilityTimeline.mockResolvedValue({
+      data: { bucket: '1 day', points }
+    })
+    vulnService.getTimelineDetails.mockResolvedValue({
+      data: [{ cve_id: 'CVE-001', agent_name: 'Agent 1' }]
     })
   })
 
-  it('renders main timeline structure', async () => {
+  it('renders main timeline structure and loads connections on mount', async () => {
     const wrapper = mount(Timeline)
     await flushPromises()
 
     expect(wrapper.find('.timeline-view').exists()).toBe(true)
     expect(wrapper.text()).toContain('Linea del tiempo')
+    expect(wazuhService.getConnections).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.connections).toHaveLength(2)
   })
 
-  it('loads connections on mount', async () => {
-    mount(Timeline)
-    await flushPromises()
-
-    expect(wazuhService.getConnections).toHaveBeenCalled()
-  })
-
-  it('displays empty card initially', () => {
+  it('shows an empty card before building the timeline', () => {
     const wrapper = mount(Timeline)
 
-    const card = wrapper.find('.empty-card')
-    expect(card.exists()).toBe(true)
-  })
-
-  it('fetches agents and vulns when connection changes', async () => {
-    const wrapper = mount(Timeline)
-    await flushPromises()
-
-    wrapper.vm.selectedConnection = '1'
-    await wrapper.vm.onConnectionChange()
-    await flushPromises()
-
-    // onConnectionChange calls fetchConnectionVulns internally
-    expect(wrapper.vm.selectedConnection).toBe('1')
-  })
-
-  it('clears agent and vuln selection when connection changes', async () => {
-    const wrapper = mount(Timeline)
-    await flushPromises()
-
-    wrapper.vm.selectedAgents = ['agent1']
-    wrapper.vm.selectedVulns = ['CVE-123']
-
-    await wrapper.vm.onConnectionChange()
-
-    expect(wrapper.vm.selectedAgents).toEqual([])
-    expect(wrapper.vm.selectedVulns).toEqual([])
-  })
-
-  it('opens detail modal when slot data is set', async () => {
-    const wrapper = mount(Timeline)
-    await flushPromises()
-
-    wrapper.vm.selectedEvent = {
-      startMs: 1234567890,
-      cardLabel: '08/03 2026',
-      details: []
-    }
-    wrapper.vm.modalOpen = true
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.vm.modalOpen).toBe(true)
-    expect(wrapper.vm.selectedEvent).toBeTruthy()
-  })
-
-  it('handles connection load error gracefully', async () => {
-    wazuhService.getConnections.mockRejectedValueOnce(new Error('Network error'))
-
-    const wrapper = mount(Timeline)
-    await flushPromises()
-
-    // Should handle error without crashing - component initializes with empty array
-    expect(wrapper.vm.connections).toEqual([])
-  })
-
-  it('initializes with correct initial state', () => {
-    const wrapper = mount(Timeline)
-
-    expect(wrapper.vm.connections).toEqual([])
+    expect(wrapper.find('.empty-card').exists()).toBe(true)
     expect(wrapper.vm.selectedConnection).toBe('')
     expect(wrapper.vm.selectedAgents).toEqual([])
     expect(wrapper.vm.selectedVulns).toEqual([])
@@ -128,142 +66,111 @@ describe('Timeline.vue', () => {
     expect(wrapper.vm.modalOpen).toBe(false)
   })
 
-  it('has correct period options', () => {
-    const wrapper = mount(Timeline)
-
-    const periods = wrapper.vm.periods
-    expect(periods).toHaveLength(5)
-    expect(periods[0]).toEqual({ v: '24h', l: '24H' })
-    expect(periods[1]).toEqual({ v: '7d', l: '7D' })
-    expect(periods[2]).toEqual({ v: '30d', l: '30D' })
-    expect(periods[3]).toEqual({ v: 'day', l: 'Dia' })
-    expect(periods[4]).toEqual({ v: 'all', l: 'Todo' })
-  })
-
-  it('updates agent and vuln options when connection changes', async () => {
-    vulnService.getVulns.mockResolvedValueOnce({
-      data: [
-        { agent_name: 'Agent 1', cve_id: 'CVE-001' },
-        { agent_name: 'Agent 2', cve_id: 'CVE-002' }
-      ]
-    })
-
+  it('loads filter options and clears dependent filters on connection change', async () => {
     const wrapper = mount(Timeline)
     await flushPromises()
 
+    wrapper.vm.selectedAgents = ['old-agent']
+    wrapper.vm.selectedVulns = ['old-cve']
     wrapper.vm.selectedConnection = '1'
+
     await wrapper.vm.onConnectionChange()
     await flushPromises()
 
-    expect(wrapper.vm.agentOpts.length).toBeGreaterThan(0)
-    expect(wrapper.vm.vulnOpts.length).toBeGreaterThan(0)
+    expect(wrapper.vm.selectedAgents).toEqual([])
+    expect(wrapper.vm.selectedVulns).toEqual([])
+    expect(wrapper.vm.agentOpts).toEqual(['Agent 1', 'Agent 2'])
+    expect(wrapper.vm.vulnOpts).toEqual(['CVE-001', 'CVE-002'])
+    expect(vulnService.getFilterOptions).toHaveBeenCalledWith('1')
   })
 
-  it('builds timeline when build is called', async () => {
+  it('handles connection and filter option errors gracefully', async () => {
+    wazuhService.getConnections.mockRejectedValueOnce(new Error('Network error'))
     const wrapper = mount(Timeline)
     await flushPromises()
 
+    expect(wrapper.vm.connections).toEqual([])
+    expect(wrapper.vm.errorBanner).toBe('No se pudieron cargar las conexiones Wazuh.')
+
+    wrapper.vm.errorBanner = ''
     wrapper.vm.selectedConnection = '1'
-    await flushPromises()
-
-    const buildSpy = vi.spyOn(wrapper.vm, 'buildTimeline')
-    await wrapper.vm.buildTimeline()
-
-    expect(buildSpy).toHaveBeenCalled()
-  })
-
-  it('handles error in onConnectionChange', async () => {
-    const wrapper = mount(Timeline)
-    await flushPromises()
-
-    wrapper.vm.selectedConnection = '1'
-    vulnService.getVulns.mockRejectedValueOnce(new Error('Fetch failed'))
-
+    vulnService.getFilterOptions.mockRejectedValueOnce(new Error('Filter error'))
     await wrapper.vm.onConnectionChange()
-    await flushPromises()
 
     expect(wrapper.vm.errorBanner).toBe('No se pudieron cargar agentes y CVEs para la conexion seleccionada.')
   })
 
-  it('handles error in buildTimeline', async () => {
+  it('builds the timeline, sets zoom and exposes a year label', async () => {
     const wrapper = mount(Timeline)
     await flushPromises()
 
     wrapper.vm.selectedConnection = '1'
-    vulnService.getVulns.mockRejectedValueOnce(new Error('Build failed'))
+    wrapper.vm.period = '7d'
+    await wrapper.vm.buildTimeline()
+    await flushPromises()
 
+    expect(wrapper.vm.hasBuilt).toBe(true)
+    expect(wrapper.vm.allSlots.length).toBe(2)
+    expect(wrapper.vm.visibleSlots.length).toBeGreaterThan(0)
+    expect(wrapper.vm.yearLabel).toBe('2026')
+    expect(vulnService.getTraceabilityTimeline).toHaveBeenCalledWith({
+      params: { period: '7d', connection_id: '1' }
+    })
+  })
+
+  it('shows build errors through statusError', async () => {
+    vulnService.getTraceabilityTimeline.mockRejectedValueOnce(new Error('Build failed'))
+    const wrapper = mount(Timeline)
+    await flushPromises()
+
+    wrapper.vm.selectedConnection = '1'
     await wrapper.vm.buildTimeline()
     await flushPromises()
 
     expect(wrapper.vm.hasBuilt).toBe(false)
+    expect(wrapper.vm.statusError).toContain('linea de tiempo')
   })
 
-  it('provides openModal method for canvas interaction', () => {
-    const wrapper = mount(Timeline)
-    const slot = { cardLabel: 'test', details: [] }
-
-    wrapper.vm.openModal(slot)
-
-    expect(wrapper.vm.modalOpen).toBe(true)
-    expect(wrapper.vm.selectedEvent).toEqual(slot)
-  })
-
-  it('computes yearLabel correctly with data', async () => {
-    vulnService.getVulns.mockResolvedValueOnce({
-      data: [
-        { agent_name: 'Agent 1', cve_id: 'CVE-001', first_seen: '2025-01-01T00:00:00Z' },
-        { agent_name: 'Agent 1', cve_id: 'CVE-002', first_seen: '2026-01-01T00:00:00Z' }
-      ]
-    })
-
+  it('opens a slot modal and loads bucket details', async () => {
     const wrapper = mount(Timeline)
     await flushPromises()
 
     wrapper.vm.selectedConnection = '1'
-    wrapper.vm.period = 'all'
     await wrapper.vm.buildTimeline()
     await flushPromises()
 
-    expect(wrapper.vm.yearLabel).toBeTruthy()
+    const slot = wrapper.vm.allSlots[0]
+    await wrapper.vm.openModal(slot)
+    await flushPromises()
+
+    expect(wrapper.vm.modalOpen).toBe(true)
+    expect(wrapper.vm.selectedEvent.details).toEqual([{ cve_id: 'CVE-001', agent_name: 'Agent 1' }])
+    expect(vulnService.getTimelineDetails).toHaveBeenCalled()
   })
 
-  it('updates period via setPeriod method', () => {
-    const wrapper = mount(Timeline)
-    wrapper.vm.setPeriod('7d')
-    expect(wrapper.vm.period).toBe('7d')
-  })
-
-  it('displays error banner when statusError is computed', async () => {
-    const wrapper = mount(Timeline)
-    wrapper.vm.errorBanner = 'Custom Error'
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.find('.status-error').exists()).toBe(true)
-    expect(wrapper.text()).toContain('Custom Error')
-  })
-
-  it('updates state when filters emit updates', async () => {
+  it('updates period and state through child component events', async () => {
     const wrapper = mount(Timeline)
     await flushPromises()
 
+    wrapper.vm.setPeriod('7d')
+    expect(wrapper.vm.period).toBe('7d')
+
     const filters = wrapper.findComponent(TimelineFilters)
-
     await filters.vm.$emit('update:selectedConnection', '2')
-    expect(wrapper.vm.selectedConnection).toBe('2')
-
     await filters.vm.$emit('update:selectedAgents', ['Agent X'])
-    expect(wrapper.vm.selectedAgents).toEqual(['Agent X'])
-
     await filters.vm.$emit('update:selectedVulns', ['CVE-Y'])
-    expect(wrapper.vm.selectedVulns).toEqual(['CVE-Y'])
-
     await filters.vm.$emit('update:customDate', '2026-05-05')
+
+    expect(wrapper.vm.selectedConnection).toBe('2')
+    expect(wrapper.vm.selectedAgents).toEqual(['Agent X'])
+    expect(wrapper.vm.selectedVulns).toEqual(['CVE-Y'])
     expect(wrapper.vm.customDate).toBe('2026-05-05')
   })
 
-  it('closes modal when detail modal emits close', async () => {
+  it('closes the detail modal when it emits close', async () => {
     const wrapper = mount(Timeline)
     wrapper.vm.modalOpen = true
+    await wrapper.vm.$nextTick()
 
     const modal = wrapper.findComponent(TimelineDetailModal)
     await modal.vm.$emit('close')
