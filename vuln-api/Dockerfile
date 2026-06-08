@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN useradd --create-home --shell /usr/sbin/nologin appuser
+RUN useradd --create-home --shell /usr/sbin/nologin appuser && \
+    chown appuser:appuser /app
 
 COPY requirements.txt .
 # La API usa JWT HS256; ecdsa queda como dependencia transitiva no usada y Trivy la reporta vulnerable.
