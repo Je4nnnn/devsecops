@@ -148,10 +148,14 @@ EOF
                 SONAR_TOKEN = credentials('sonar-token')
             }
             steps {
-                sh '''
-                    set -eu
-                    python3 dev-tools/jenkins/scripts/configure_sonar_gate.py
-                '''
+                script {
+                    docker.image('python:3.12-alpine').inside('--network=sonarqube_sonar-network --user=root') {
+                        sh '''
+                            set -eu
+                            python3 dev-tools/jenkins/scripts/configure_sonar_gate.py
+                        '''
+                    }
+                }
             }
         }
 
