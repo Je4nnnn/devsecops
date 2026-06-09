@@ -345,12 +345,13 @@ PY
                         'COMPOSE_PROJECT_NAME=jenkins-dast',
                         'NETWORK=jenkins-dast_app-network',
                         'TARGET_API=http://api:8000/openapi.json',
-                        'TARGET_FRONTEND=http://frontend:80'
+                        'TARGET_FRONTEND=http://frontend:80',
+                        'FRONTEND_HTTP_PORT=0',
+                        'FRONTEND_HTTPS_PORT=0'
                     ]) {
                         sh 'docker compose -f docker-compose.yml up -d db-api api'
                         sh 'docker compose -f docker-compose.yml build frontend'
-                        sh 'docker rm -f jenkins-dast-frontend >/dev/null 2>&1 || true'
-                        sh 'docker run -d --name jenkins-dast-frontend --network jenkins-dast_app-network --network-alias frontend jenkins-dast-frontend'
+                        sh 'docker compose -f docker-compose.yml up -d frontend'
                         sh 'mkdir -p reports && chmod 777 reports'
                         sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
                         sh './dev-tools/jenkins/scripts/run_zap.sh "$BUILD_NUMBER"'

@@ -71,6 +71,20 @@ docker run --rm \
     "${ZAP_AUTH_ARGS[@]}"
 
 echo "--- ZAP Frontend Baseline ---"
+echo "Esperando frontend en ${TARGET_FRONTEND} dentro de la red ${NETWORK}..."
+FRONTEND_COUNT=0
+until docker run --rm --network="${NETWORK}" curlimages/curl:8.12.1 \
+    --output /dev/null --silent --head --fail "${TARGET_FRONTEND}"; do
+    if [ "${FRONTEND_COUNT}" -eq "${MAX_RETRIES}" ]; then
+        echo "ERROR: El frontend no levanto despues de $((MAX_RETRIES * 2)) segundos. Abortando ZAP."
+        exit 1
+    fi
+    printf '.'
+    sleep 2
+    FRONTEND_COUNT=$((FRONTEND_COUNT + 1))
+done
+echo
+
 docker run --rm \
     --user root \
     --network="${NETWORK}" \
