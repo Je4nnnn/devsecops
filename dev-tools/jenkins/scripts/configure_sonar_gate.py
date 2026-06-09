@@ -13,6 +13,13 @@ SONAR_TOKEN = os.getenv("SONAR_TOKEN", "")
 PROJECT_KEY = os.getenv("SONAR_PROJECT_KEY", "vuln-app")
 GATE_NAME = os.getenv("SONAR_QUALITY_GATE_NAME", "DevSecOps CI Gate")
 MIN_COVERAGE = os.getenv("SONAR_MIN_COVERAGE", "70")
+REQUIRED_CONDITIONS = {
+    "coverage": ("LT", MIN_COVERAGE),
+    "duplicated_lines_density": ("GT", "3"),
+    "new_maintainability_rating": ("GT", "1"),
+    "new_reliability_rating": ("GT", "1"),
+    "new_security_rating": ("GT", "1"),
+}
 
 
 def request(method, path, params=None, required=True):
@@ -66,6 +73,32 @@ def condition_exists(gate, metric):
     return any(condition.get("metric") == metric for condition in gate.get("conditions", []) or [])
 
 
+def condition_matches(condition):
+    expected = REQUIRED_CONDITIONS.get(condition.get("metric"))
+    if not expected:
+        return False
+    expected_op, expected_error = expected
+    return condition.get("op") == expected_op and str(condition.get("error")) == str(expected_error)
+
+
+def delete_condition(condition):
+    condition_id = condition.get("id")
+    if not condition_id:
+        print(f"Sonar gate: condicion sin id no eliminada {condition}", file=sys.stderr)
+        return
+    request("POST", "/api/qualitygates/delete_condition", {"id": str(condition_id)})
+    print(
+        "Sonar gate: condicion eliminada "
+        f"{condition.get('metric')} {condition.get('op')} {condition.get('error')}"
+    )
+
+
+def reconcile_conditions(gate):
+    for condition in gate.get("conditions", []) or []:
+        if not condition_matches(condition):
+            delete_condition(condition)
+
+
 def add_condition(gate, metric, op, error):
     if condition_exists(gate, metric):
         print(f"Sonar gate: condicion existente {metric}")
@@ -98,11 +131,10 @@ def main():
         return 2
 
     gate = ensure_gate()
-    add_condition(gate, "coverage", "LT", MIN_COVERAGE)
-    add_condition(gate, "duplicated_lines_density", "GT", "3")
-    add_condition(gate, "new_maintainability_rating", "GT", "1")
-    add_condition(gate, "new_reliability_rating", "GT", "1")
-    add_condition(gate, "new_security_rating", "GT", "1")
+    reconcile_conditions(gate)
+    gate = get_gate()
+    for metric, (op, error) in REQUIRED_CONDITIONS.items():
+        add_condition(gate, metric, op, error)
 
     request("POST", "/api/qualitygates/select", {"projectKey": PROJECT_KEY, "gateName": GATE_NAME})
     print(f"Sonar gate: {GATE_NAME} asignado a {PROJECT_KEY}")
