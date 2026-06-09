@@ -3,6 +3,9 @@ pipeline {
 
     environment {
         SONAR_SERVER_URL = 'http://sonarqube:9000'
+        SONAR_PROJECT_KEY = 'vuln-app'
+        SONAR_QUALITY_GATE_NAME = 'DevSecOps CI Gate'
+        SONAR_MIN_COVERAGE = '70'
         BACKEND_MIN_COVERAGE = '70'
         FRONTEND_MIN_COVERAGE = '60'
         TRIVY_IMAGE = 'aquasec/trivy:latest'
@@ -140,6 +143,18 @@ EOF
             }
         }
 
+        stage('SAST: Configure SonarQube Quality Gate') {
+            environment {
+                SONAR_TOKEN = credentials('sonar-token')
+            }
+            steps {
+                sh '''
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/configure_sonar_gate.py
+                '''
+            }
+        }
+
         stage('SAST: SonarQube Code Analysis') {
             environment {
                 SONAR_TOKEN = credentials('sonar-token')
@@ -241,7 +256,19 @@ req = urllib.request.Request(url)
 req.add_header("Authorization", "Basic " + base64.b64encode(f"{token}:".encode()).decode())
 with urllib.request.urlopen(req, timeout=30) as resp:
     data = json.loads(resp.read().decode())
-print(data["projectStatus"]["status"])
+project_status = data["projectStatus"]
+for condition in project_status.get("conditions", []):
+    print(
+        "Condition: {metric} {op} {error} actual={actual} status={status}".format(
+            metric=condition.get("metricKey", "unknown"),
+            op=condition.get("comparator", ""),
+            error=condition.get("errorThreshold", ""),
+            actual=condition.get("actualValue", ""),
+            status=condition.get("status", ""),
+        ),
+        file=__import__("sys").stderr,
+    )
+print(project_status["status"])
 PY
 )
                                 echo "Quality Gate: $gate"
