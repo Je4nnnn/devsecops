@@ -2,95 +2,76 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TimelineCanvas from '@/presentation/views/timeline/components/TimelineCanvas.vue'
 
-const visibleSlots = [
+const startMs = new Date('2026-03-01T00:00:00Z').getTime()
+const endMs = new Date('2026-03-31T00:00:00Z').getTime()
+
+const bars = [
   {
-    startMs: 1,
-    painted: true,
-    type: 'detection',
-    tickLabel: '08/03',
-    cardLabel: '08/03 2026',
-    total: 4,
-    pending: 3,
-    resolved: 1,
-    details: [{ id: 1 }]
+    id: 1,
+    cve_id: 'CVE-2023-1234',
+    agent_name: 'srv-01',
+    package_name: 'openssl',
+    package_version: '1.1.1',
+    severity: 'High',
+    status: 'RESOLVED',
+    ongoing: false,
+    clippedLeft: false,
+    clippedRight: false,
+    leftPct: 16.6,
+    widthPct: 33.3
   },
   {
-    startMs: 2,
-    painted: false,
-    type: 'none',
-    tickLabel: '09/03',
-    cardLabel: '09/03 2026',
-    total: 0,
-    pending: 0,
-    resolved: 0,
-    details: []
+    id: 2,
+    cve_id: 'CVE-2023-5678',
+    agent_name: 'srv-02',
+    package_name: 'curl',
+    package_version: '7.81',
+    severity: 'Critical',
+    status: 'ACTIVE',
+    ongoing: true,
+    clippedLeft: true,
+    clippedRight: true,
+    leftPct: 0,
+    widthPct: 100
   }
 ]
 
+const mountCanvas = () =>
+  mount(TimelineCanvas, {
+    props: { bars, range: { startMs, endMs }, spanMs: endMs - startMs }
+  })
+
 describe('TimelineCanvas.vue', () => {
-  it('emits navigation events and respects disabled states', async () => {
-    const wrapper = mount(TimelineCanvas, {
-      props: {
-        allSlots: visibleSlots,
-        visibleSlots,
-        paintedCount: 1,
-        yearLabel: '2026',
-        activeZoom: { label: '30D' },
-        canMoveLeft: true,
-        canMoveRight: false,
-        canZoomIn: true,
-        canZoomOut: false
-      }
-    })
-
-    const buttons = wrapper.findAll('.btn-icon')
-    // buttons: 0: move-left, 1: zoom-out, 2: zoom-in, 3: move-right
-
-    // Test move-left (enabled)
-    await buttons[0].trigger('click')
-    expect(wrapper.emitted('move-left')).toBeTruthy()
-
-    // Test zoom-out (disabled)
-    expect(buttons[1].element.disabled).toBe(true)
-    await buttons[1].trigger('click')
-    expect(wrapper.emitted('zoom-out')).toBeFalsy()
-
-    // Test zoom-in (enabled)
-    await buttons[2].trigger('click')
-    expect(wrapper.emitted('zoom-in')).toBeTruthy()
-
-    // Test move-right (disabled)
-    expect(buttons[3].element.disabled).toBe(true)
-    await buttons[3].trigger('click')
-    expect(wrapper.emitted('move-right')).toBeFalsy()
+  it('renders one bar per threat', () => {
+    const wrapper = mountCanvas()
+    expect(wrapper.findAll('.gantt-bar')).toHaveLength(2)
+    expect(wrapper.findAll('.gantt-row')).toHaveLength(2)
   })
 
-  it('computes stageStyle correctly', () => {
-    const wrapper = mount(TimelineCanvas, {
-      props: {
-        allSlots: visibleSlots,
-        visibleSlots,
-        paintedCount: 1,
-        activeZoom: { label: '30D' }
-      }
-    })
-
-    const stage = wrapper.find('.ig-stage')
-    expect(stage.attributes('style')).toContain('--slot-count: 2')
+  it('renders date axis ticks', () => {
+    const wrapper = mountCanvas()
+    // TICK_COUNT (7) + 1 boundary tick
+    expect(wrapper.findAll('.axis-tick')).toHaveLength(8)
   })
 
-  it('renders painted and empty slots correctly', () => {
-    const wrapper = mount(TimelineCanvas, {
-      props: {
-        allSlots: visibleSlots,
-        visibleSlots,
-        paintedCount: 1,
-        activeZoom: { label: '30D' }
-      }
-    })
+  it('marks the ongoing threat with the ongoing class', () => {
+    const wrapper = mountCanvas()
+    const ongoingBar = wrapper.findAll('.gantt-bar')[1]
+    expect(ongoingBar.classes()).toContain('ongoing')
+    expect(ongoingBar.classes()).toContain('clip-left')
+  })
 
-    const segments = wrapper.findAll('.ig-segment')
-    expect(segments[0].classes()).toContain('detection')
-    expect(segments[1].classes()).toContain('empty')
+  it('positions bars using leftPct / widthPct', () => {
+    const wrapper = mountCanvas()
+    const style = wrapper.findAll('.gantt-bar')[0].attributes('style')
+    expect(style).toContain('left: 16.6%')
+    expect(style).toContain('width: 33.3%')
+  })
+
+  it('emits open-threat with the bar when clicked', async () => {
+    const wrapper = mountCanvas()
+    await wrapper.findAll('.gantt-bar')[0].trigger('click')
+    expect(wrapper.emitted('open-threat')).toBeTruthy()
+    expect(wrapper.emitted('open-threat')[0][0].id).toBe(1)
   })
 })

@@ -1,87 +1,64 @@
 import { computed, ref } from 'vue'
 import vulnService from '../../../application/services/vulnService'
-import { HOUR_MS, fmtDDMM, fmtHour, fmtYear } from './timelineFormatters'
 
-// Mapea el periodo de la UI al periodo/bucket del backend
-const PERIOD_MAP = {
-  '24h': '24h',
-  '7d': '7d',
-  '30d': '30d',
-  'day': '24h',
-  'all': 'all',
-}
-
-const initialZoomForPeriod = period => {
-  if (period === '7d') return 2
-  if (period === '24h' || period === 'day') return 4
-  return 0
-}
-
-const bucketToSlotHours = bucket => {
-  if (!bucket) return 24
-  if (bucket.includes('hour')) return 1
-  return 24
-}
+// Tope de barras a renderizar (las amenazas pueden ser miles).
+const MAX_THREATS = 300
 
 export default function useTimelineData({
   selectedConnection,
   selectedAgents,
   selectedVulns,
-  period,
+  startDate,
 }) {
   const loading = ref(false)
   const hasBuilt = ref(false)
   const errorMessage = ref('')
   const warningMessage = ref('')
-  const points = ref([])
-  const bucketLabel = ref('1 day')
-  const latestSnap = ref({ total: 0, pending: 0, resolved: 0 })
 
-  // Determina el "tipo" visual del slot a partir de los conteos del bucket
-  const slotType = (p) => {
-    const detections = (p.nuevas || 0) + (p.reemergidas || 0)
-    const resolutions = p.remediadas || 0
-    if (detections > 0 && resolutions > 0) return 'mixed'
-    if (detections > 0) return 'detection'
-    if (resolutions > 0) return 'resolution'
-    return 'none'
-  }
+  const items = ref([])
+  const range = ref({ startMs: 0, endMs: 0 })
+  const counts = ref({ total: 0, active: 0, resolved: 0, returned: 0 })
 
-  const allSlots = computed(() => {
-    const slotHours = bucketToSlotHours(bucketLabel.value)
-    return points.value
-      .map(p => {
-        const startMs = new Date(p.bucket).getTime()
-        const detections = (p.nuevas || 0) + (p.reemergidas || 0)
-        const resolved = p.remediadas || 0
-        const type = slotType(p)
-        return {
-          startMs,
-          bucket: p.bucket,
-          painted: type !== 'none',
-          type,
-          total: detections + resolved,
-          pending: detections,
-          resolved,
-          nuevas: p.nuevas || 0,
-          reemergidas: p.reemergidas || 0,
-          remediadas: p.remediadas || 0,
-          slotHours,
-          tickLabel: slotHours >= 24 ? fmtDDMM(startMs) : fmtHour(startMs),
-          cardLabel: slotHours >= 24
-            ? `${fmtDDMM(startMs)} ${fmtYear(startMs)}`
-            : `${fmtDDMM(startMs)} ${fmtHour(startMs)}`,
-          // details se cargan bajo demanda al abrir el slot
-          details: [],
-        }
-      })
-      .filter(slot => slot.painted)
+  const spanMs = computed(() => Math.max(1, range.value.endMs - range.value.startMs))
+
+  // Geometría de cada barra recortada (clamp) al rango visible [start, end].
+  const bars = computed(() => {
+    const { startMs, endMs } = range.value
+    const span = spanMs.value
+    return items.value.map(it => {
+      const detected = new Date(it.start).getTime()
+      const ongoing = it.status === 'ACTIVE' || !it.end
+      const finished = ongoing ? endMs : new Date(it.end).getTime()
+
+      const barStart = Math.max(detected, startMs)
+      const barEnd = Math.min(finished, endMs)
+      const leftPct = ((barStart - startMs) / span) * 100
+      const widthPct = Math.max(0.8, ((barEnd - barStart) / span) * 100)
+
+      return {
+        ...it,
+        ongoing,
+        detectedMs: detected,
+        finishedMs: finished,
+        // Recorte fuera de rango por la izquierda/derecha (para indicar "viene de antes")
+        clippedLeft: detected < startMs,
+        clippedRight: ongoing || finished > endMs,
+        leftPct,
+        widthPct: Math.min(widthPct, 100 - leftPct),
+      }
+    })
   })
 
-  const paintedCount = computed(() => allSlots.value.length)
+  const visibleCount = computed(() => bars.value.length)
+
+  const toIsoStart = dateStr => {
+    // dateStr = "yyyy-mm-dd" -> inicio del día local en ISO
+    if (!dateStr) return undefined
+    return new Date(`${dateStr}T00:00:00`).toISOString()
+  }
 
   const build = async () => {
-    if (!selectedConnection.value) return { initialZoom: 0 }
+    if (!selectedConnection.value) return
 
     loading.value = true
     hasBuilt.value = false
@@ -90,37 +67,38 @@ export default function useTimelineData({
 
     try {
       const params = {
-        period: PERIOD_MAP[period.value] || '30d',
         connection_id: selectedConnection.value,
+        limit: MAX_THREATS,
       }
+      const isoStart = toIsoStart(startDate.value)
+      if (isoStart) params.start = isoStart
       if (selectedAgents.value?.length) params.agent_name = selectedAgents.value.join(',')
       if (selectedVulns.value?.length) params.cve_id = selectedVulns.value.join(',')
 
-      const res = await vulnService.getTraceabilityTimeline({ params })
+      const res = await vulnService.getThreatSpans({ params })
       const data = res.data || {}
-      points.value = Array.isArray(data.points) ? data.points : []
-      bucketLabel.value = data.bucket || '1 day'
 
-      const totals = points.value.reduce(
-        (acc, p) => {
-          acc.pending += (p.nuevas || 0) + (p.reemergidas || 0)
-          acc.resolved += p.remediadas || 0
-          return acc
-        },
-        { pending: 0, resolved: 0 }
-      )
-      latestSnap.value = {
-        total: totals.pending + totals.resolved,
-        pending: totals.pending,
-        resolved: totals.resolved,
+      items.value = Array.isArray(data.items) ? data.items : []
+      range.value = {
+        startMs: new Date(data.range?.start).getTime(),
+        endMs: new Date(data.range?.end).getTime(),
+      }
+      counts.value = {
+        total: data.total || 0,
+        active: data.active || 0,
+        resolved: data.resolved || 0,
+        returned: data.returned || items.value.length,
       }
 
-      if (!points.value.length) {
-        warningMessage.value = 'No hay eventos de trazabilidad en el periodo seleccionado.'
+      if (!items.value.length) {
+        warningMessage.value = 'No hay amenazas en el rango seleccionado.'
+      } else if (counts.value.total > counts.value.returned) {
+        warningMessage.value =
+          `Mostrando ${counts.value.returned} de ${counts.value.total} amenazas ` +
+          `(las más severas/antiguas). Acota con filtros para ver el resto.`
       }
 
       hasBuilt.value = true
-      return { initialZoom: initialZoomForPeriod(period.value) }
     } catch (error) {
       console.error(error)
       errorMessage.value = 'No se pudo generar la linea de tiempo. Intenta nuevamente.'
@@ -130,33 +108,16 @@ export default function useTimelineData({
     }
   }
 
-  // Carga los registros de un bucket puntual (drill-down del modal)
-  const fetchSlotDetails = async (slot) => {
-    const slotMs = (slot.slotHours || 24) * HOUR_MS
-    const start = new Date(slot.startMs).toISOString()
-    const end = new Date(slot.startMs + slotMs - 1).toISOString()
-
-    const params = {
-      bucket_start: start,
-      bucket_end: end,
-      connection_id: selectedConnection.value,
-    }
-    if (selectedAgents.value?.length) params.agent_name = selectedAgents.value.join(',')
-    if (selectedVulns.value?.length) params.cve_id = selectedVulns.value.join(',')
-
-    const res = await vulnService.getTimelineDetails({ params })
-    return Array.isArray(res.data) ? res.data : []
-  }
-
   return {
     loading,
     hasBuilt,
-    allSlots,
-    paintedCount,
-    latestSnap,
+    bars,
+    range,
+    spanMs,
+    counts,
+    visibleCount,
     errorMessage,
     warningMessage,
     build,
-    fetchSlotDetails,
   }
 }

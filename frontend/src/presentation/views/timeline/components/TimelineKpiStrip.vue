@@ -1,20 +1,20 @@
 <template>
   <div class="kpi-strip" v-if="hasBuilt">
     <div class="kpi-card">
-      <span class="kpi-label">Registros de eventos</span>
-      <span class="kpi-val">{{ paintedCount }}</span>
+      <span class="kpi-label">Amenazas (distintas)</span>
+      <span class="kpi-val">{{ counts.total }}</span>
     </div>
     <div class="kpi-card kpi-danger">
-      <span class="kpi-label">Pendientes</span>
-      <span class="kpi-val">{{ latestSnap.pending }}</span>
+      <span class="kpi-label">Activas</span>
+      <span class="kpi-val">{{ counts.active }}</span>
     </div>
     <div class="kpi-card kpi-success">
-      <span class="kpi-label">Resueltos</span>
-      <span class="kpi-val">{{ latestSnap.resolved }}</span>
+      <span class="kpi-label">Resueltas</span>
+      <span class="kpi-val">{{ counts.resolved }}</span>
     </div>
     <div class="kpi-card">
-      <span class="kpi-label">Total</span>
-      <span class="kpi-val">{{ latestSnap.total }}</span>
+      <span class="kpi-label">En vista</span>
+      <span class="kpi-val">{{ counts.returned }}</span>
     </div>
   </div>
 </template>
@@ -22,10 +22,9 @@
 <script setup>
 defineProps({
   hasBuilt: { type: Boolean, default: false },
-  paintedCount: { type: Number, default: 0 },
-  latestSnap: {
+  counts: {
     type: Object,
-    default: () => ({ total: 0, pending: 0, resolved: 0 })
+    default: () => ({ total: 0, active: 0, resolved: 0, returned: 0 })
   }
 })
 </script>

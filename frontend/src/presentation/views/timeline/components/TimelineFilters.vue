@@ -50,23 +50,13 @@
       </div>
 
       <div class="f-group">
-        <label>Periodo</label>
-        <div class="chip-row">
-          <button
-            v-for="periodOption in periods"
-            :key="periodOption.v"
-            class="chip"
-            :class="{ on: period === periodOption.v }"
-            @click="emit('set-period', periodOption.v)"
-          >
-            {{ periodOption.l }}
-          </button>
-        </div>
+        <label>Desde</label>
+        <input type="date" v-model="startDateModel" :max="today" class="filter-input">
       </div>
 
-      <div class="f-group" v-if="period === 'day'">
-        <label>Dia</label>
-        <input type="date" v-model="customDateModel" class="filter-input">
+      <div class="f-group">
+        <label>Hasta</label>
+        <input type="text" :value="'Hoy'" class="filter-input" disabled>
       </div>
 
       <div class="f-group f-action">
@@ -88,9 +78,7 @@ const props = defineProps({
   selectedConnection: { type: [String, Number], default: '' },
   selectedAgents: { type: Array, required: true },
   selectedVulns: { type: Array, required: true },
-  period: { type: String, required: true },
-  periods: { type: Array, required: true },
-  customDate: { type: String, required: true },
+  startDate: { type: String, required: true },
   loading: { type: Boolean, default: false }
 })
 
@@ -98,11 +86,12 @@ const emit = defineEmits([
   'update:selectedConnection',
   'update:selectedAgents',
   'update:selectedVulns',
-  'update:customDate',
+  'update:startDate',
   'connection-change',
-  'set-period',
   'build'
 ])
+
+const today = new Date().toISOString().split('T')[0]
 
 const connectionModel = computed({
   get: () => props.selectedConnection,
@@ -119,9 +108,9 @@ const selectedVulnsModel = computed({
   set: value => emit('update:selectedVulns', value)
 })
 
-const customDateModel = computed({
-  get: () => props.customDate,
-  set: value => emit('update:customDate', value)
+const startDateModel = computed({
+  get: () => props.startDate,
+  set: value => emit('update:startDate', value)
 })
 
 const search = reactive({ agent: '', vuln: '' })
@@ -138,7 +127,7 @@ const filteredVulns = computed(() =>
 
 <style scoped>
 .filter-panel { padding: 0; margin-bottom: 1.5rem; overflow: visible; }
-.filter-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto; align-items: stretch; }
+.filter-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 0.85fr 0.7fr auto; align-items: stretch; }
 .f-group { display: flex; flex-direction: column; padding: 1rem 1.2rem; border-right: 1px solid var(--border); }
 .f-group:last-child { border-right: none; }
 .f-group label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.5rem; }

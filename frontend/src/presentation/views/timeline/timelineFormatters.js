@@ -33,3 +33,26 @@ export const badge = type => {
   if (type === 'resolution') return 'RESUELTA'
   return 'MIXTO'
 }
+
+export const fmtDayLabel = ms => {
+  const date = new Date(ms)
+  return date.toLocaleDateString('es-CL', { day: '2-digit', month: 'short' })
+}
+
+// Clave de severidad normalizada (es/en) para color y orden.
+export const severityKey = value => {
+  const s = (value || '').toLowerCase()
+  if (['critical', 'critica', 'crítica'].includes(s)) return 'critical'
+  if (['high', 'alta'].includes(s)) return 'high'
+  if (['medium', 'media'].includes(s)) return 'medium'
+  return 'low'
+}
+
+export const SEVERITY_COLORS = {
+  critical: '#dc2626',
+  high: '#ea580c',
+  medium: '#d97706',
+  low: '#3b82f6',
+}
+
+export const severityColor = value => SEVERITY_COLORS[severityKey(value)]
