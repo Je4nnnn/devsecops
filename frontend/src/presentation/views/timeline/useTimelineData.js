@@ -8,7 +8,9 @@ export default function useTimelineData({
   selectedConnection,
   selectedAgents,
   selectedVulns,
+  selectedSeverities,
   startDate,
+  endDate,
 }) {
   const loading = ref(false)
   const hasBuilt = ref(false)
@@ -57,6 +59,12 @@ export default function useTimelineData({
     return new Date(`${dateStr}T00:00:00`).toISOString()
   }
 
+  const toIsoEnd = dateStr => {
+    // dateStr = "yyyy-mm-dd" -> fin del día local en ISO (incluye todo el día)
+    if (!dateStr) return undefined
+    return new Date(`${dateStr}T23:59:59.999`).toISOString()
+  }
+
   const build = async () => {
     if (!selectedConnection.value) return
 
@@ -72,10 +80,13 @@ export default function useTimelineData({
       }
       const isoStart = toIsoStart(startDate.value)
       if (isoStart) params.start = isoStart
+      const isoEnd = toIsoEnd(endDate?.value)
+      if (isoEnd) params.end = isoEnd
       if (selectedAgents.value?.length) params.agent_name = selectedAgents.value.join(',')
       if (selectedVulns.value?.length) params.cve_id = selectedVulns.value.join(',')
+      if (selectedSeverities?.value?.length) params.severity = selectedSeverities.value.join(',')
 
-      const res = await vulnService.getThreatSpans({ params })
+      const res = await vulnService.getThreatSpans(params)
       const data = res.data || {}
 
       items.value = Array.isArray(data.items) ? data.items : []

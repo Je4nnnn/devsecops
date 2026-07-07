@@ -16,15 +16,20 @@
       :connections="connections"
       :agent-options="agentOpts"
       :vuln-options="vulnOpts"
+      :severity-options="severityOpts"
       :selected-connection="selectedConnection"
       :selected-agents="selectedAgents"
       :selected-vulns="selectedVulns"
+      :selected-severities="selectedSeverities"
       :start-date="startDate"
+      :end-date="endDate"
       :loading="loading"
       @update:selected-connection="selectedConnection = $event"
       @update:selected-agents="selectedAgents = $event"
       @update:selected-vulns="selectedVulns = $event"
+      @update:selected-severities="selectedSeverities = $event"
       @update:start-date="startDate = $event"
+      @update:end-date="endDate = $event"
       @connection-change="onConnectionChange"
       @build="buildTimeline"
     />
@@ -72,9 +77,11 @@ import TimelineKpiStrip from './timeline/components/TimelineKpiStrip.vue'
 const connections = ref([])
 const agentOpts = ref([])
 const vulnOpts = ref([])
+const severityOpts = ref([])
 const selectedConnection = ref('')
 const selectedAgents = ref([])
 const selectedVulns = ref([])
+const selectedSeverities = ref([])
 const errorBanner = ref('')
 
 // Fecha de inicio por defecto: hace 30 días.
@@ -84,6 +91,7 @@ const defaultStart = () => {
   return d.toISOString().split('T')[0]
 }
 const startDate = ref(defaultStart())
+const endDate = ref(new Date().toISOString().split('T')[0]) // hoy; editable, sin futuro
 
 const modalOpen = ref(false)
 const modalLoading = ref(false)
@@ -103,14 +111,18 @@ const {
   selectedConnection,
   selectedAgents,
   selectedVulns,
+  selectedSeverities,
   startDate,
+  endDate,
 })
 
 const onConnectionChange = async () => {
   selectedAgents.value = []
   selectedVulns.value = []
+  selectedSeverities.value = []
   agentOpts.value = []
   vulnOpts.value = []
+  severityOpts.value = []
   errorBanner.value = ''
 
   if (!selectedConnection.value) return
@@ -119,6 +131,7 @@ const onConnectionChange = async () => {
     const res = await vulnService.getFilterOptions(selectedConnection.value)
     agentOpts.value = res.data?.agents || []
     vulnOpts.value = res.data?.cves || []
+    severityOpts.value = res.data?.severities || []
   } catch (error) {
     console.error(error)
     errorBanner.value = 'No se pudieron cargar agentes y CVEs para la conexion seleccionada.'

@@ -55,7 +55,9 @@ describe('useTimelineData', () => {
       selectedConnection: ref('1'),
       selectedAgents: ref([]),
       selectedVulns: ref([]),
-      startDate: ref('2026-03-01')
+      selectedSeverities: ref([]),
+      startDate: ref('2026-03-01'),
+      endDate: ref('2026-03-31')
     }
   })
 
@@ -126,14 +128,17 @@ describe('useTimelineData', () => {
     const tl = useTimelineData({
       ...props,
       selectedAgents: ref(['srv-01']),
-      selectedVulns: ref(['CVE-2023-1234'])
+      selectedVulns: ref(['CVE-2023-1234']),
+      selectedSeverities: ref(['CRITICAL', 'HIGH'])
     })
     await tl.build()
 
-    const { params } = vulnService.getThreatSpans.mock.calls[0][0]
+    const params = vulnService.getThreatSpans.mock.calls[0][0]
     expect(params.connection_id).toBe('1')
     expect(params.agent_name).toBe('srv-01')
     expect(params.cve_id).toBe('CVE-2023-1234')
+    expect(params.severity).toBe('CRITICAL,HIGH')
     expect(params.start).toBeTruthy()
+    expect(params.end).toBeTruthy()
   })
 })

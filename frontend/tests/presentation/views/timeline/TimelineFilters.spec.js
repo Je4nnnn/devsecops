@@ -9,10 +9,13 @@ const defaultProps = {
   ],
   agentOptions: ['Agent 1', 'Agent 2', 'Agent 3'],
   vulnOptions: ['CVE-2023-001', 'CVE-2023-002'],
+  severityOptions: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
   selectedConnection: '',
   selectedAgents: [],
   selectedVulns: [],
+  selectedSeverities: [],
   startDate: '2026-03-01',
+  endDate: '2026-03-31',
   loading: false
 }
 
@@ -42,6 +45,17 @@ describe('TimelineFilters.vue', () => {
     expect(wrapper.emitted('update:startDate')[0]).toEqual(['2026-04-10'])
   })
 
+  it('renders the "Hasta" date input and emits update:endDate', async () => {
+    const wrapper = mount(TimelineFilters, { props: defaultProps })
+    const dateInputs = wrapper.findAll('input[type="date"]')
+    expect(dateInputs).toHaveLength(2)
+    expect(dateInputs[1].element.value).toBe('2026-03-31')
+
+    await dateInputs[1].setValue('2026-03-20')
+    expect(wrapper.emitted('update:endDate')).toBeTruthy()
+    expect(wrapper.emitted('update:endDate')[0]).toEqual(['2026-03-20'])
+  })
+
   it('opens the agent dropdown when clicked', async () => {
     const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
     const ddButtons = wrapper.findAll('.dd-btn')
@@ -65,6 +79,16 @@ describe('TimelineFilters.vue', () => {
     const searchInput = wrapper.find('.dd-search')
     await searchInput.setValue('CVE-2023-002')
     expect(wrapper.vm.filteredVulns).toEqual(['CVE-2023-002'])
+  })
+
+  it('selects all severities when "Todas" is clicked', async () => {
+    const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
+    // dd-btn index 2 = criticidad (0 agentes, 1 vulns, 2 criticidad)
+    await wrapper.findAll('.dd-btn')[2].trigger('click')
+    await wrapper.vm.$nextTick()
+    const todas = wrapper.find('.dd-actions').findAll('span')[0]
+    await todas.trigger('click')
+    expect(wrapper.emitted('update:selectedSeverities')[0][0]).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
   })
 
   it('emits build event when button is clicked', async () => {

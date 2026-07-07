@@ -52,7 +52,7 @@ describe('Timeline.vue', () => {
       ]
     })
     vulnService.getFilterOptions.mockResolvedValue({
-      data: { agents: ['srv-01', 'srv-02'], cves: ['CVE-2023-1234'] }
+      data: { agents: ['srv-01', 'srv-02'], cves: ['CVE-2023-1234'], severities: ['CRITICAL', 'HIGH'] }
     })
     vulnService.getThreatSpans.mockResolvedValue(threatResponse)
     vulnService.getVulnHistory.mockResolvedValue({
@@ -99,6 +99,7 @@ describe('Timeline.vue', () => {
     expect(vulnService.getFilterOptions).toHaveBeenCalledWith('1')
     expect(wrapper.vm.agentOpts).toEqual(['srv-01', 'srv-02'])
     expect(wrapper.vm.vulnOpts).toEqual(['CVE-2023-1234'])
+    expect(wrapper.vm.severityOpts).toEqual(['CRITICAL', 'HIGH'])
   })
 
   it('clears agent and vuln selection when connection changes', async () => {

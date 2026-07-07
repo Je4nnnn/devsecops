@@ -7,6 +7,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    ports:
+      # Publica Postgres en el host para conectarse desde la app en local.
+      # Host 5433 -> contenedor 5432 (5433 evita chocar con un Postgres local).
+      - "${DB_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_api_data:/var/lib/postgresql/data
     networks:

@@ -49,14 +49,34 @@
         </div>
       </div>
 
+      <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.severity = false)">
+        <label>Criticidad</label>
+        <button class="filter-input dd-btn" @click="dropdowns.severity = !dropdowns.severity">
+          <span>{{ selectedSeveritiesModel.length ? selectedSeveritiesModel.length + ' sel.' : 'Todas' }}</span>
+          <span>▼</span>
+        </button>
+        <div v-if="dropdowns.severity" class="dd-panel fade-in">
+          <div class="dd-actions">
+            <span @click="selectedSeveritiesModel = [...severityOptions]">Todas</span>
+            <span @click="selectedSeveritiesModel = []">Limpiar</span>
+          </div>
+          <div class="dd-list custom-scroll">
+            <label v-for="sev in severityOptions" :key="sev" class="dd-item">
+              <input type="checkbox" :value="sev" v-model="selectedSeveritiesModel">
+              <span class="sev-badge" :style="{ background: severityColor(sev) }">{{ sev }}</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
       <div class="f-group">
         <label>Desde</label>
-        <input type="date" v-model="startDateModel" :max="today" class="filter-input">
+        <input type="date" v-model="startDateModel" :max="endDate || today" class="filter-input">
       </div>
 
       <div class="f-group">
         <label>Hasta</label>
-        <input type="text" :value="'Hoy'" class="filter-input" disabled>
+        <input type="date" v-model="endDateModel" :min="startDate" :max="today" class="filter-input">
       </div>
 
       <div class="f-group f-action">
@@ -70,15 +90,19 @@
 
 <script setup>
 import { computed, reactive } from 'vue'
+import { severityColor } from '../timelineFormatters'
 
 const props = defineProps({
   connections: { type: Array, required: true },
   agentOptions: { type: Array, required: true },
   vulnOptions: { type: Array, required: true },
+  severityOptions: { type: Array, default: () => [] },
   selectedConnection: { type: [String, Number], default: '' },
   selectedAgents: { type: Array, required: true },
   selectedVulns: { type: Array, required: true },
+  selectedSeverities: { type: Array, default: () => [] },
   startDate: { type: String, required: true },
+  endDate: { type: String, required: true },
   loading: { type: Boolean, default: false }
 })
 
@@ -86,7 +110,9 @@ const emit = defineEmits([
   'update:selectedConnection',
   'update:selectedAgents',
   'update:selectedVulns',
+  'update:selectedSeverities',
   'update:startDate',
+  'update:endDate',
   'connection-change',
   'build'
 ])
@@ -113,8 +139,18 @@ const startDateModel = computed({
   set: value => emit('update:startDate', value)
 })
 
+const endDateModel = computed({
+  get: () => props.endDate,
+  set: value => emit('update:endDate', value)
+})
+
+const selectedSeveritiesModel = computed({
+  get: () => props.selectedSeverities,
+  set: value => emit('update:selectedSeverities', value)
+})
+
 const search = reactive({ agent: '', vuln: '' })
-const dropdowns = reactive({ agents: false, vulns: false })
+const dropdowns = reactive({ agents: false, vulns: false, severity: false })
 
 const filteredAgents = computed(() =>
   props.agentOptions.filter(agent => agent.toLowerCase().includes(search.agent.toLowerCase()))
@@ -127,7 +163,7 @@ const filteredVulns = computed(() =>
 
 <style scoped>
 .filter-panel { padding: 0; margin-bottom: 1.5rem; overflow: visible; }
-.filter-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 0.85fr 0.7fr auto; align-items: stretch; }
+.filter-row { display: grid; grid-template-columns: 1.1fr 0.9fr 0.9fr 0.85fr 0.75fr 0.65fr auto; align-items: stretch; }
 .f-group { display: flex; flex-direction: column; padding: 1rem 1.2rem; border-right: 1px solid var(--border); }
 .f-group:last-child { border-right: none; }
 .f-group label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.5rem; }
@@ -140,7 +176,8 @@ const filteredVulns = computed(() =>
 .dd-actions { display: flex; justify-content: space-between; padding: 0.5rem 0.9rem; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--primary); }
 .dd-actions span { cursor: pointer; }
 .dd-list { max-height: 220px; overflow-y: auto; }
-.dd-item { display: flex; gap: 0.6rem; padding: 0.4rem 0.9rem; font-size: 0.82rem; }
+.dd-item { display: flex; gap: 0.6rem; padding: 0.4rem 0.9rem; font-size: 0.82rem; align-items: center; }
+.sev-badge { color: #fff; font-size: 0.66rem; font-weight: 800; padding: 0.1rem 0.45rem; border-radius: 999px; text-transform: uppercase; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .chip { padding: 0.4rem 0.8rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-dark); font-size: 0.72rem; font-weight: 700; color: var(--text-muted); cursor: pointer; }
 .chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
