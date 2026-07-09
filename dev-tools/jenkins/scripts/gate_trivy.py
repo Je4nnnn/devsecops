@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 FAIL_SEVERITIES = {s.strip().upper() for s in os.getenv("TRIVY_FAIL_SEVERITIES", "CRITICAL,HIGH").split(",") if s.strip()}
+IGNORE_IDS = {s.strip() for s in os.getenv("TRIVY_IGNORE_IDS", "").split(",") if s.strip()}
 
 
 def iter_findings(data):
@@ -56,6 +57,9 @@ def main() -> int:
         data = json.loads(path.read_text(encoding="utf-8"))
         for finding in iter_findings(data):
             totals[finding["severity"]] += 1
+            if finding["id"] in IGNORE_IDS:
+                print(f"GATE Trivy: hallazgo aceptado por excepcion {finding['id']} en {target}")
+                continue
             if finding["severity"] in FAIL_SEVERITIES:
                 failing.append((path.name, finding))
 

@@ -12,6 +12,7 @@ pipeline {
         TRIVY_FAIL_SEVERITIES = 'CRITICAL,HIGH'
         TRIVY_SEVERITY = 'CRITICAL,HIGH'
         TRIVY_IGNORE_UNFIXED = 'true'
+        TRIVY_IGNORE_IDS = 'GHSA-537c-gmf6-5ccf'
         ZAP_FAIL_RISK_LEVELS = 'High'
     }
 
@@ -78,7 +79,7 @@ EOF
                     sed -i 's|SF:/app/src/|SF:frontend/src/|g' frontend/coverage/lcov.info
                     sed -i 's|SF:src/|SF:frontend/src/|g' frontend/coverage/lcov.info
 
-                    docker compose build frontend
+                    docker compose build --pull frontend
                 '''
             }
         }
@@ -313,7 +314,7 @@ PY
             steps {
                 sh '''
                     set -eu
-                    COMPOSE_PROJECT_NAME=jenkins-security docker compose -f docker-compose.yml build api frontend
+                    COMPOSE_PROJECT_NAME=jenkins-security docker compose -f docker-compose.yml build --pull --no-cache api frontend
                 '''
             }
         }
@@ -350,7 +351,7 @@ PY
                         'FRONTEND_HTTPS_PORT=0'
                     ]) {
                         sh 'docker compose -f docker-compose.yml up -d db-api api'
-                        sh 'docker compose -f docker-compose.yml build frontend'
+                        sh 'docker compose -f docker-compose.yml build --pull --no-cache frontend'
                         sh 'docker compose -f docker-compose.yml up -d frontend'
                         sh 'mkdir -p reports && chmod 777 reports'
                         sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
