@@ -1309,26 +1309,29 @@ def top_vulnerable_assets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    days = max(1, min(days, 365))
+    """Servidores con más vulnerabilidades activas (CVEs distintos).
+
+    Se calcula sobre el inventario actual de ``wazuh_vulnerabilities`` (estado
+    ACTIVE) en vez de los eventos de detección dentro de una ventana de días.
+    Así el panel siempre reporta mientras existan vulnerabilidades activas,
+    sin depender de que el @timestamp de Wazuh caiga dentro de los últimos N días.
+    """
     limit = max(1, min(limit, 50))
-    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     rows = db.query(
-        Asset.hostname.label("hostname"),
-        sql_func.count(sql_func.distinct(VulnerabilityDetection.cve_id)).label("total"),
-    ).join(
-        VulnerabilityDetection, VulnerabilityDetection.asset_id == Asset.id
-    ).join(
-        Manager, Manager.id == Asset.manager_id
-    ).filter(
-        VulnerabilityDetection.timestamp >= since,
-        VulnerabilityDetection.status.in_(["Detected", "Re-emerged"]),
-    )
+        WazuhVulnerability.agent_name.label("hostname"),
+        sql_func.count(sql_func.distinct(WazuhVulnerability.cve_id)).label("total"),
+    ).filter(WazuhVulnerability.status == "ACTIVE")
 
     if connection_id is not None:
-        rows = rows.filter(Manager.legacy_connection_id == connection_id)
+        rows = rows.filter(WazuhVulnerability.connection_id == connection_id)
 
-    rows = rows.group_by(Asset.hostname).order_by(text("total DESC")).limit(limit).all()
+    rows = (
+        rows.group_by(WazuhVulnerability.agent_name)
+        .order_by(text("total DESC"))
+        .limit(limit)
+        .all()
+    )
     return [
         {"hostname": hostname or "Sin hostname", "total": total}
         for hostname, total in rows
@@ -1614,4 +1617,119 @@ def traceability_summary(
         "persistentes": total_activas - nuevas,
         "remediadas": resolved_q.count(),
         "total_activas": total_activas,
+    }
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+@app.get("/vulns/evolution/threats")
+def threat_spans(
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    connection_id: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Línea de tiempo tipo Gantt: una barra por amenaza (vulnerabilidad única).
+
+    Cada elemento representa un registro distinto de ``wazuh_vulnerabilities``
+    (servidor + paquete + CVE) con su intervalo de vida:
+
+    * ``start`` = first_seen (cuándo se detectó por primera vez).
+    * ``end``   = last_seen si está RESOLVED; ``null`` si sigue ACTIVE (en curso).
+
+    El conteo (``total`` / ``active`` / ``resolved``) es de amenazas DISTINTAS,
+    no de eventos de detección: si una amenaza se actualizó 6 veces, cuenta 1.
+
+    El frontend recorta (clamp) cada barra al rango visible [start, end].
+    Consulta directa e indexada sobre ``wazuh_vulnerabilities`` (rápida).
+    """
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+
+    now = datetime.now(timezone.utc)
+    end = _ensure_utc(end) if end else now
+    start = _ensure_utc(start) if start else (end - timedelta(days=30))
+
+    # Filtro base por dimensiones (sin tiempo): define el universo de amenazas.
+    base = _apply_vuln_filters(
+        db.query(WazuhVulnerability),
+        connection_id,
+        _split_csv(agent_name),
+        _split_csv(cve_id),
+        [],  # packages
+        _split_csv(severity),
+        None,  # status (lo manejamos aquí)
+        None,
+        None,
+        None,
+    )
+
+    # Una amenaza "aparece" en el rango si sigue activa o si su última
+    # actividad (last_seen) cae dentro/después del inicio del rango, y su
+    # primera detección no es posterior al fin del rango.
+    in_range = base.filter(
+        WazuhVulnerability.first_seen <= end,
+        or_(
+            WazuhVulnerability.status == "ACTIVE",
+            WazuhVulnerability.last_seen >= start,
+        ),
+    )
+
+    total = in_range.order_by(None).count()
+    active = in_range.filter(WazuhVulnerability.status == "ACTIVE").order_by(None).count()
+    resolved = total - active
+
+    rows = (
+        in_range.order_by(
+            _SEVERITY_RANK.desc(),
+            WazuhVulnerability.first_seen.asc(),
+            WazuhVulnerability.id.asc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items = [
+        {
+            "id": v.id,
+            "cve_id": v.cve_id,
+            "connection_id": v.connection_id,
+            "connection_name": v.connection.name if v.connection else None,
+            "agent_name": v.agent_name,
+            "package_name": v.package_name,
+            "package_version": v.package_version,
+            "severity": v.severity,
+            "score_base": float(v.score_base) if v.score_base is not None else None,
+            "status": v.status,
+            "start": v.first_seen.isoformat() if v.first_seen else None,
+            "end": (
+                v.last_seen.isoformat()
+                if (v.status == "RESOLVED" and v.last_seen)
+                else None
+            ),
+            "last_seen": v.last_seen.isoformat() if v.last_seen else None,
+        }
+        for v in rows
+    ]
+
+    return {
+        "range": {"start": start.isoformat(), "end": end.isoformat()},
+        "total": total,
+        "active": active,
+        "resolved": resolved,
+        "returned": len(items),
+        "limit": limit,
+        "offset": offset,
+        "items": items,
     }

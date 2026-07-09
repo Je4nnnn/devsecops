@@ -3,7 +3,7 @@
     <div class="header-actions">
       <div>
         <h1 class="title">Linea del tiempo</h1>
-        <p class="subtitle">Vista infografica con linea continua y slots con o sin cambios.</p>
+        <p class="subtitle">Línea de vida de cada amenaza: desde su detección hasta su resolución.</p>
       </div>
     </div>
 
@@ -16,57 +16,49 @@
       :connections="connections"
       :agent-options="agentOpts"
       :vuln-options="vulnOpts"
+      :severity-options="severityOpts"
       :selected-connection="selectedConnection"
       :selected-agents="selectedAgents"
       :selected-vulns="selectedVulns"
-      :period="period"
-      :periods="periods"
-      :custom-date="customDate"
+      :selected-severities="selectedSeverities"
+      :start-date="startDate"
+      :end-date="endDate"
       :loading="loading"
       @update:selected-connection="selectedConnection = $event"
       @update:selected-agents="selectedAgents = $event"
       @update:selected-vulns="selectedVulns = $event"
-      @update:custom-date="customDate = $event"
+      @update:selected-severities="selectedSeverities = $event"
+      @update:start-date="startDate = $event"
+      @update:end-date="endDate = $event"
       @connection-change="onConnectionChange"
-      @set-period="setPeriod"
       @build="buildTimeline"
     />
 
     <TimelineKpiStrip
       :has-built="hasBuilt"
-      :painted-count="paintedCount"
-      :latest-snap="latestSnap"
+      :counts="counts"
     />
 
     <TimelineCanvas
-      v-if="hasBuilt && visibleSlots.length > 0"
-      :all-slots="allSlots"
-      :visible-slots="visibleSlots"
-      :painted-count="paintedCount"
-      :year-label="yearLabel"
-      :active-zoom="activeZoom"
-      :can-move-left="canMoveLeft"
-      :can-move-right="canMoveRight"
-      :can-zoom-in="canZoomIn"
-      :can-zoom-out="canZoomOut"
-      @move-left="moveLeft"
-      @move-right="moveRight"
-      @zoom-in="zoomIn"
-      @zoom-out="zoomOut"
-      @open-slot="openModal"
+      v-if="hasBuilt && bars.length > 0"
+      :bars="bars"
+      :range="range"
+      :span-ms="spanMs"
+      @open-threat="openThreat"
     />
 
     <div v-else class="card empty-card">
       <div v-if="loading" class="empty-center"><p>Escaneando historial...</p></div>
       <div v-else class="empty-center">
         <h3>Sin datos para mostrar</h3>
-        <p>Selecciona filtros y presiona "Generar Vista".</p>
+        <p>Selecciona una conexión y una fecha de inicio, luego presiona "Generar Vista".</p>
       </div>
     </div>
 
     <TimelineDetailModal
       :show="modalOpen"
       :event-data="selectedEvent"
+      :loading="modalLoading"
       @close="modalOpen = false"
     />
   </div>
@@ -77,106 +69,69 @@ import { computed, onMounted, ref } from 'vue'
 import wazuhService from '../../application/services/wazuhService'
 import vulnService from '../../application/services/vulnService'
 import useTimelineData from './timeline/useTimelineData'
-import useTimelineNavigation from './timeline/useTimelineNavigation'
-import { fmtYear } from './timeline/timelineFormatters'
 import TimelineCanvas from './timeline/components/TimelineCanvas.vue'
 import TimelineDetailModal from './timeline/components/TimelineDetailModal.vue'
 import TimelineFilters from './timeline/components/TimelineFilters.vue'
 import TimelineKpiStrip from './timeline/components/TimelineKpiStrip.vue'
 
-const periods = [
-  { l: '24H', v: '24h' },
-  { l: '7D', v: '7d' },
-  { l: '30D', v: '30d' },
-  { l: 'Dia', v: 'day' },
-  { l: 'Todo', v: 'all' }
-]
-
 const connections = ref([])
 const agentOpts = ref([])
 const vulnOpts = ref([])
+const severityOpts = ref([])
 const selectedConnection = ref('')
 const selectedAgents = ref([])
 const selectedVulns = ref([])
-const period = ref('30d')
-const customDate = ref(new Date().toISOString().split('T')[0])
+const selectedSeverities = ref([])
 const errorBanner = ref('')
 
-const modalOpen = ref(false)
-const selectedEvent = ref(null)
-
-const getConnectionName = () => {
-  const found = connections.value.find(conn => String(conn.id) === String(selectedConnection.value))
-  return found?.name || ''
+// Fecha de inicio por defecto: hace 30 días.
+const defaultStart = () => {
+  const d = new Date()
+  d.setDate(d.getDate() - 30)
+  return d.toISOString().split('T')[0]
 }
+const startDate = ref(defaultStart())
+const endDate = ref(new Date().toISOString().split('T')[0]) // hoy; editable, sin futuro
 
-let allSlotsRef = null
-const navigation = useTimelineNavigation(() => (allSlotsRef ? allSlotsRef.value.length : 0))
+const modalOpen = ref(false)
+const modalLoading = ref(false)
+const selectedEvent = ref(null)
 
 const {
   loading,
   hasBuilt,
-  allSlots,
-  paintedCount,
-  latestSnap,
+  bars,
+  range,
+  spanMs,
+  counts,
   errorMessage,
   warningMessage,
   build,
-  fetchSlotDetails
 } = useTimelineData({
   selectedConnection,
   selectedAgents,
   selectedVulns,
-  period
+  selectedSeverities,
+  startDate,
+  endDate,
 })
-
-allSlotsRef = allSlots
-
-const {
-  activeZoom,
-  visibleCount,
-  viewStartIndex,
-  canMoveLeft,
-  canMoveRight,
-  canZoomIn,
-  canZoomOut,
-  setZoomLevel,
-  zoomIn,
-  zoomOut,
-  moveLeft,
-  moveRight,
-  jumpToEnd
-} = navigation
-
-const visibleSlots = computed(() =>
-  allSlots.value.slice(viewStartIndex.value, viewStartIndex.value + visibleCount.value)
-)
-
-const yearLabel = computed(() => {
-  if (!visibleSlots.value.length) return ''
-  const start = fmtYear(visibleSlots.value[0].startMs)
-  const end = fmtYear(visibleSlots.value[visibleSlots.value.length - 1].startMs)
-  return start === end ? start : `${start} - ${end}`
-})
-
-const setPeriod = value => {
-  period.value = value
-}
 
 const onConnectionChange = async () => {
   selectedAgents.value = []
   selectedVulns.value = []
+  selectedSeverities.value = []
   agentOpts.value = []
   vulnOpts.value = []
+  severityOpts.value = []
   errorBanner.value = ''
 
   if (!selectedConnection.value) return
 
   try {
-    // Opciones precalculadas en el backend (rápido, sin descargar 20k filas)
     const res = await vulnService.getFilterOptions(selectedConnection.value)
     agentOpts.value = res.data?.agents || []
     vulnOpts.value = res.data?.cves || []
+    severityOpts.value = res.data?.severities || []
   } catch (error) {
     console.error(error)
     errorBanner.value = 'No se pudieron cargar agentes y CVEs para la conexion seleccionada.'
@@ -186,27 +141,23 @@ const onConnectionChange = async () => {
 const buildTimeline = async () => {
   errorBanner.value = ''
   try {
-    const { initialZoom } = await build()
-    setZoomLevel(initialZoom)
-    jumpToEnd()
+    await build()
   } catch (error) {
     console.error(error)
   }
 }
 
-const modalLoading = ref(false)
-
-const openModal = async slot => {
-  // Abre el modal y carga el detalle del bucket bajo demanda
-  selectedEvent.value = { ...slot, details: [] }
+const openThreat = async threat => {
+  // Abre el modal y carga el historial puntual de la amenaza desde la BD.
+  selectedEvent.value = { ...threat, history: [] }
   modalOpen.value = true
   modalLoading.value = true
   try {
-    const details = await fetchSlotDetails(slot)
-    selectedEvent.value = { ...slot, details }
+    const res = await vulnService.getVulnHistory(threat.id)
+    selectedEvent.value = { ...threat, ...(res.data || {}) }
   } catch (error) {
     console.error(error)
-    selectedEvent.value = { ...slot, details: [] }
+    selectedEvent.value = { ...threat, history: [] }
   } finally {
     modalLoading.value = false
   }

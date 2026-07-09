@@ -5,41 +5,49 @@ import vulnService from '@/application/services/vulnService'
 
 vi.mock('@/application/services/vulnService', () => ({
   default: {
-    getTraceabilityTimeline: vi.fn(),
-    getTimelineDetails: vi.fn()
+    getThreatSpans: vi.fn()
   }
 }))
 
+const makeResponse = (overrides = {}) => ({
+  data: {
+    range: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
+    total: 2,
+    active: 1,
+    resolved: 1,
+    returned: 2,
+    items: [
+      {
+        id: 1,
+        cve_id: 'CVE-2023-1234',
+        agent_name: 'srv-01',
+        package_name: 'openssl',
+        package_version: '1.1.1',
+        severity: 'High',
+        status: 'RESOLVED',
+        start: '2026-03-06T00:00:00Z',
+        end: '2026-03-16T00:00:00Z',
+        last_seen: '2026-03-16T00:00:00Z'
+      },
+      {
+        id: 2,
+        cve_id: 'CVE-2023-5678',
+        agent_name: 'srv-02',
+        package_name: 'curl',
+        package_version: '7.81',
+        severity: 'Critical',
+        status: 'ACTIVE',
+        start: '2026-02-20T00:00:00Z',
+        end: null,
+        last_seen: '2026-03-30T00:00:00Z'
+      }
+    ],
+    ...overrides
+  }
+})
+
 describe('useTimelineData', () => {
   let props
-  let timeline
-
-  const points = [
-    {
-      bucket: '2026-03-07T00:00:00Z',
-      nuevas: 2,
-      reemergidas: 0,
-      remediadas: 0
-    },
-    {
-      bucket: '2026-03-08T00:00:00Z',
-      nuevas: 1,
-      reemergidas: 1,
-      remediadas: 2
-    },
-    {
-      bucket: '2026-03-09T00:00:00Z',
-      nuevas: 0,
-      reemergidas: 0,
-      remediadas: 1
-    },
-    {
-      bucket: '2026-03-10T00:00:00Z',
-      nuevas: 0,
-      reemergidas: 0,
-      remediadas: 0
-    }
-  ]
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -47,104 +55,98 @@ describe('useTimelineData', () => {
       selectedConnection: ref('1'),
       selectedAgents: ref([]),
       selectedVulns: ref([]),
-      period: ref('7d')
+      selectedSeverities: ref([]),
+      startDate: ref('2026-03-01'),
+      endDate: ref('2026-03-31')
     }
-    timeline = useTimelineData(props)
-    vulnService.getTraceabilityTimeline.mockResolvedValue({
-      data: { bucket: '1 day', points }
-    })
-    vulnService.getTimelineDetails.mockResolvedValue({
-      data: [{ cve_id: 'CVE-2023-1234', agent_name: 'srv-01' }]
-    })
   })
 
-  it('builds traceability slots and totals from backend timeline points', async () => {
-    const result = await timeline.build()
-
-    expect(result.initialZoom).toBe(2)
-    expect(timeline.hasBuilt.value).toBe(true)
-    expect(timeline.loading.value).toBe(false)
-    expect(timeline.latestSnap.value).toEqual({ total: 7, pending: 4, resolved: 3 })
-    expect(timeline.allSlots.value).toHaveLength(3)
-    expect(timeline.allSlots.value.map(slot => slot.type)).toEqual(['detection', 'mixed', 'resolution'])
-    expect(timeline.paintedCount.value).toBe(3)
-    expect(vulnService.getTraceabilityTimeline).toHaveBeenCalledWith({
-      params: { period: '7d', connection_id: '1' }
-    })
-  })
-
-  it('returns empty state when no connection is selected', async () => {
-    const emptyTimeline = useTimelineData({
-      ...props,
-      selectedConnection: ref('')
-    })
-
-    const result = await emptyTimeline.build()
-
-    expect(result.initialZoom).toBe(0)
-    expect(emptyTimeline.hasBuilt.value).toBe(false)
-    expect(vulnService.getTraceabilityTimeline).not.toHaveBeenCalled()
-  })
-
-  it('maps period and filters to backend params', async () => {
-    props.period.value = '24h'
-    props.selectedAgents.value = ['srv-01', 'srv-02']
-    props.selectedVulns.value = ['CVE-1']
-
-    const result = await timeline.build()
-
-    expect(result.initialZoom).toBe(4)
-    expect(vulnService.getTraceabilityTimeline).toHaveBeenCalledWith({
-      params: {
-        period: '24h',
-        connection_id: '1',
-        agent_name: 'srv-01,srv-02',
-        cve_id: 'CVE-1'
-      }
-    })
-  })
-
-  it('uses fallback zoom for long periods', async () => {
-    props.period.value = '30d'
-    expect((await timeline.build()).initialZoom).toBe(0)
-
-    props.period.value = 'all'
-    expect((await timeline.build()).initialZoom).toBe(0)
-  })
-
-  it('sets a warning when the selected period has no traceability points', async () => {
-    vulnService.getTraceabilityTimeline.mockResolvedValueOnce({ data: { bucket: '1 day', points: [] } })
+  it('builds the threat list and distinct counts', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
+    const timeline = useTimelineData(props)
 
     await timeline.build()
 
     expect(timeline.hasBuilt.value).toBe(true)
-    expect(timeline.allSlots.value).toEqual([])
-    expect(timeline.warningMessage.value).toContain('No hay eventos')
+    expect(timeline.bars.value).toHaveLength(2)
+    expect(timeline.counts.value.total).toBe(2)
+    expect(timeline.counts.value.active).toBe(1)
+    expect(timeline.counts.value.resolved).toBe(1)
   })
 
-  it('propagates backend errors while setting a user-facing message', async () => {
-    vulnService.getTraceabilityTimeline.mockRejectedValueOnce(new Error('API Error'))
+  it('does nothing without a selected connection', async () => {
+    const timeline = useTimelineData({ ...props, selectedConnection: ref('') })
+
+    await timeline.build()
+
+    expect(timeline.hasBuilt.value).toBe(false)
+    expect(vulnService.getThreatSpans).not.toHaveBeenCalled()
+  })
+
+  it('clamps bar geometry to the visible range', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
+    const timeline = useTimelineData(props)
+    await timeline.build()
+
+    const resolved = timeline.bars.value.find(bar => bar.id === 1)
+    expect(resolved.leftPct).toBeCloseTo((5 / 30) * 100, 1)
+    expect(resolved.ongoing).toBe(false)
+    expect(resolved.clippedRight).toBe(false)
+
+    const ongoing = timeline.bars.value.find(bar => bar.id === 2)
+    expect(ongoing.clippedLeft).toBe(true)
+    expect(ongoing.leftPct).toBe(0)
+    expect(ongoing.ongoing).toBe(true)
+    expect(ongoing.clippedRight).toBe(true)
+  })
+
+  it('warns when there are more threats than returned', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse({ total: 500, returned: 2 }))
+    const timeline = useTimelineData(props)
+
+    await timeline.build()
+
+    expect(timeline.warningMessage.value).toContain('500')
+  })
+
+  it('warns when the range has no threats', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(
+      makeResponse({ total: 0, active: 0, resolved: 0, returned: 0, items: [] })
+    )
+    const timeline = useTimelineData(props)
+
+    await timeline.build()
+
+    expect(timeline.warningMessage.value).toContain('No hay amenazas')
+  })
+
+  it('surfaces API errors', async () => {
+    vulnService.getThreatSpans.mockRejectedValueOnce(new Error('API Error'))
+    const timeline = useTimelineData(props)
 
     await expect(timeline.build()).rejects.toThrow('API Error')
     expect(timeline.loading.value).toBe(false)
-    expect(timeline.errorMessage.value).toContain('linea de tiempo')
+    expect(timeline.errorMessage.value).toContain('generar la linea de tiempo')
   })
 
-  it('loads bucket drill-down details with selected filters', async () => {
-    props.selectedAgents.value = ['srv-01']
-    props.selectedVulns.value = ['CVE-2023-1234']
+  it('passes filters as query params', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
+    const timeline = useTimelineData({
+      ...props,
+      selectedAgents: ref(['srv-01']),
+      selectedVulns: ref(['CVE-2023-1234']),
+      selectedSeverities: ref(['CRITICAL', 'HIGH'])
+    })
+
     await timeline.build()
 
-    const slot = timeline.allSlots.value[0]
-    const details = await timeline.fetchSlotDetails(slot)
-
-    expect(details).toEqual([{ cve_id: 'CVE-2023-1234', agent_name: 'srv-01' }])
-    expect(vulnService.getTimelineDetails).toHaveBeenCalledWith({
-      params: expect.objectContaining({
-        connection_id: '1',
-        agent_name: 'srv-01',
-        cve_id: 'CVE-2023-1234'
-      })
-    })
+    const params = vulnService.getThreatSpans.mock.calls[0][0]
+    expect(params.connection_id).toBe('1')
+    expect(params.limit).toBe(300)
+    expect(params.agent_name).toBe('srv-01')
+    expect(params.cve_id).toBe('CVE-2023-1234')
+    expect(params.severity).toBe('CRITICAL,HIGH')
+    expect(params.start).toBeTruthy()
+    expect(params.end).toBeTruthy()
   })
 })

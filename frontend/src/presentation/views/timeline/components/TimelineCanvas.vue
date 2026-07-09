@@ -2,48 +2,62 @@
   <div class="card timeline-card">
     <div class="tl-toolbar">
       <div class="tl-toolbar-left">
-        <span class="tl-year">{{ yearLabel }}</span>
-
+        <span class="tl-year">{{ rangeLabel }}</span>
+        <span class="tl-info">{{ bars.length }} amenazas</span>
       </div>
-      <div class="tl-toolbar-right">
-        <button class="btn btn-outline btn-icon" @click="emit('move-left')" :disabled="!canMoveLeft">◀</button>
-        <button class="btn btn-outline btn-icon" @click="emit('zoom-out')" :disabled="!canZoomOut">-</button>
-        <span class="zoom-badge">{{ activeZoom.label }}</span>
-        <button class="btn btn-outline btn-icon" @click="emit('zoom-in')" :disabled="!canZoomIn">+</button>
-        <button class="btn btn-outline btn-icon" @click="emit('move-right')" :disabled="!canMoveRight">▶</button>
+      <div class="tl-legend">
+        <span class="lg-item"><i class="dot" style="background:#dc2626"></i>Crítica</span>
+        <span class="lg-item"><i class="dot" style="background:#ea580c"></i>Alta</span>
+        <span class="lg-item"><i class="dot" style="background:#d97706"></i>Media</span>
+        <span class="lg-item"><i class="dot" style="background:#3b82f6"></i>Baja</span>
+        <span class="lg-item"><i class="dot ongoing-dot"></i>En curso</span>
       </div>
     </div>
 
-    <div class="ig-stage" :style="stageStyle">
-      <div class="ig-label-row">
-        <div v-for="slot in visibleSlots" :key="`l-${slot.startMs}`" class="ig-label-slot">
-          <span v-if="slot.painted" class="ig-label" :class="slot.type">{{ badge(slot.type) }}</span>
-        </div>
-      </div>
-
-      <div class="ig-track-wrap">
-        <div class="ig-segments">
+    <div class="gantt">
+      <!-- Eje de fechas -->
+      <div class="gantt-axis">
+        <div class="gantt-axis-label-col"></div>
+        <div class="gantt-axis-track">
           <div
-            v-for="slot in visibleSlots"
-            :key="`s-${slot.startMs}`"
-            class="ig-segment"
-            :class="slot.painted ? slot.type : 'empty'"
+            v-for="tick in ticks"
+            :key="tick.ms"
+            class="axis-tick"
+            :style="{ left: tick.leftPct + '%' }"
           >
-            <span class="segment-date">{{ slot.tickLabel }}</span>
+            <span class="axis-tick-label">{{ tick.label }}</span>
           </div>
         </div>
       </div>
 
-      <div class="ig-cards-row">
-        <div v-for="slot in visibleSlots" :key="`c-${slot.startMs}`" class="ig-card-slot">
-          <button v-if="slot.painted" class="event-card" :class="slot.type" @click="emit('open-slot', slot)">
-            <div class="card-top">{{ slot.cardLabel }}</div>
-            <div class="card-stats">
-              <span>Total: <strong>{{ slot.total }}</strong></span>
-              <span class="danger">Pendientes: <strong>{{ slot.pending }}</strong></span>
-              <span class="success">Resueltos: <strong>{{ slot.resolved }}</strong></span>
-            </div>
-          </button>
+      <!-- Filas (una barra por amenaza) -->
+      <div class="gantt-body custom-scroll">
+        <div v-for="bar in bars" :key="bar.id" class="gantt-row">
+          <div class="gantt-row-label" :title="`${bar.cve_id} · ${bar.agent_name}`">
+            <span class="sev-pip" :style="{ background: color(bar.severity) }"></span>
+            <span class="row-cve">{{ bar.cve_id }}</span>
+            <span class="row-agent">{{ bar.agent_name }}</span>
+          </div>
+
+          <div class="gantt-row-track">
+            <!-- Línea guía vertical de cada tick -->
+            <div
+              v-for="tick in ticks"
+              :key="`g-${bar.id}-${tick.ms}`"
+              class="grid-line"
+              :style="{ left: tick.leftPct + '%' }"
+            ></div>
+
+            <button
+              class="gantt-bar"
+              :class="{ ongoing: bar.ongoing, 'clip-left': bar.clippedLeft, 'clip-right': bar.clippedRight }"
+              :style="{ left: bar.leftPct + '%', width: bar.widthPct + '%', background: color(bar.severity) }"
+              @click="emit('open-threat', bar)"
+              :title="barTitle(bar)"
+            >
+              <span class="bar-text">{{ bar.package_name }}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -52,144 +66,109 @@
 
 <script setup>
 import { computed } from 'vue'
-import { badge } from '../timelineFormatters'
+import { fmtDayLabel, severityColor } from '../timelineFormatters'
 
 const props = defineProps({
-  allSlots: { type: Array, required: true },
-  visibleSlots: { type: Array, required: true },
-  paintedCount: { type: Number, required: true },
-  yearLabel: { type: String, default: '' },
-  activeZoom: { type: Object, required: true },
-  canMoveLeft: { type: Boolean, default: false },
-  canMoveRight: { type: Boolean, default: false },
-  canZoomIn: { type: Boolean, default: false },
-  canZoomOut: { type: Boolean, default: false }
+  bars: { type: Array, required: true },
+  range: { type: Object, required: true },
+  spanMs: { type: Number, required: true },
 })
 
-const emit = defineEmits(['move-left', 'move-right', 'zoom-in', 'zoom-out', 'open-slot'])
+const emit = defineEmits(['open-threat'])
 
-const stageStyle = computed(() => ({ '--slot-count': String(Math.max(1, props.visibleSlots.length)) }))
+const color = severityColor
+
+const TICK_COUNT = 7
+
+const ticks = computed(() => {
+  const { startMs } = props.range
+  const span = props.spanMs
+  const out = []
+  for (let i = 0; i <= TICK_COUNT; i++) {
+    const ms = startMs + (span * i) / TICK_COUNT
+    out.push({ ms, leftPct: (i / TICK_COUNT) * 100, label: fmtDayLabel(ms) })
+  }
+  return out
+})
+
+const rangeLabel = computed(() => {
+  const { startMs, endMs } = props.range
+  return `${fmtDayLabel(startMs)} → ${fmtDayLabel(endMs)} (Hoy)`
+})
+
+const barTitle = bar => {
+  const estado = bar.ongoing ? 'En curso (activa)' : 'Resuelta'
+  return `${bar.cve_id} · ${bar.agent_name}\n${bar.package_name} v${bar.package_version}\n${estado}`
+}
 </script>
 
 <style scoped>
 .timeline-card { padding: 0; overflow: hidden; }
-.tl-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 0.9rem 1.2rem; border-bottom: 1px solid var(--border); background: var(--bg-hover); }
-.tl-toolbar-left { display: flex; gap: 1rem; align-items: center; }
+.tl-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.2rem; border-bottom: 1px solid var(--border); background: var(--bg-hover); }
+.tl-toolbar-left { display: flex; gap: 1rem; align-items: baseline; }
 .tl-year { font-weight: 800; font-size: 0.95rem; }
 .tl-info { font-size: 0.78rem; color: var(--text-muted); }
-.tl-toolbar-right { display: flex; align-items: center; gap: 0.4rem; }
-.zoom-badge { min-width: 52px; text-align: center; font-weight: 800; font-size: 0.78rem; color: var(--text-muted); }
-.btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
-.btn-outline:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
-.btn-icon { width: 34px; height: 34px; padding: 0; }
+.tl-legend { display: flex; gap: 0.85rem; flex-wrap: wrap; }
+.lg-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--text-muted); font-weight: 600; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.ongoing-dot { background: repeating-linear-gradient(45deg, #64748b, #64748b 2px, #cbd5e1 2px, #cbd5e1 4px); }
 
-.ig-stage {
-  position: relative;
-  padding: 2.2rem 1.2rem 1.5rem;
-  background: linear-gradient(180deg, #f8f7f0 0%, #f1f4ee 100%);
-  overflow-x: auto;
-}
+.gantt { display: flex; flex-direction: column; }
 
-.ig-label-row,
-.ig-cards-row,
-.ig-segments {
-  display: grid;
-  grid-template-columns: repeat(var(--slot-count), minmax(90px, 1fr));
-  gap: 0.75rem;
-}
+.gantt-axis { display: flex; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
+.gantt-axis-label-col { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); }
+.gantt-axis-track { position: relative; flex: 1; height: 34px; }
+.axis-tick { position: absolute; top: 0; height: 100%; transform: translateX(-50%); display: flex; align-items: center; }
+.axis-tick-label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); white-space: nowrap; }
 
-.ig-label-slot,
-.ig-card-slot { display: flex; justify-content: center; }
+.gantt-body { max-height: 560px; overflow-y: auto; }
 
-.ig-label {
-  padding: 0.35rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: #fff;
-}
+.gantt-row { display: flex; align-items: stretch; min-height: 32px; border-bottom: 1px solid var(--border); }
+.gantt-row:hover { background: var(--bg-hover); }
 
-.ig-label.detection { background: #6ea42a; }
-.ig-label.resolution { background: #059669; }
-.ig-label.mixed { background: #d97706; }
-
-.ig-track-wrap { position: relative; margin-top: 1rem; }
-.ig-segments { align-items: center; }
-
-.ig-segment {
-  min-height: 30px;
-  border-radius: 0;
+.gantt-row-label {
+  width: 220px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(17, 24, 39, 0.08);
-  background: #d1d5db;
+  gap: 0.45rem;
+  padding: 0 0.7rem;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
 }
+.sev-pip { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.row-cve { font-size: 0.72rem; font-weight: 700; color: var(--text-main); white-space: nowrap; }
+.row-agent { font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.ig-segment.empty { opacity: 0.45; }
-.ig-segment.detection { background: #6ea42a; color: #fff; }
-.ig-segment.resolution { background: #059669; color: #fff; }
-.ig-segment.mixed { background: #d97706; color: #fff; }
+.gantt-row-track { position: relative; flex: 1; min-width: 0; }
+.grid-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); opacity: 0.5; }
 
-.segment-date { font-size: 0.72rem; font-weight: 700; }
-
-.ig-cards-row { margin-top: 1.6rem; }
-
-.event-card {
-  width: 100%;
-  max-width: 160px;
-  min-height: 138px;
+.gantt-bar {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 16px;
+  min-width: 4px;
   border: none;
-  border-radius: var(--radius-sm);
-  text-align: left;
-  color: #fff;
+  border-radius: 4px;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-  transition: var(--transition);
-}
-
-.event-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
-.event-card.detection { background: #6ea42a; }
-.event-card.resolution { background: #059669; }
-.event-card.mixed { background: #d97706; }
-
-.card-top {
-  font-size: 0.73rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.35);
-  padding: 0.7rem;
-}
-
-.card-stats {
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.7rem;
-  font-size: 0.72rem;
+  align-items: center;
+  overflow: hidden;
+  transition: filter 0.15s ease, transform 0.15s ease;
 }
+.gantt-bar:hover { filter: brightness(1.1); transform: translateY(-50%) scaleY(1.15); }
+.bar-text { font-size: 0.62rem; color: #fff; font-weight: 600; padding: 0 0.4rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.card-stats .danger { color: #fee2e2; }
-.card-stats .success { color: #dcfce7; }
-
-@media (max-width: 1100px) {
-  .ig-segments,
-  .ig-label-row,
-  .ig-cards-row {
-    grid-template-columns: repeat(var(--slot-count), minmax(76px, 1fr));
-    gap: 0.55rem;
-  }
-
-  .event-card { max-width: 130px; min-height: 120px; }
-}
+/* Indicadores de recorte fuera de rango */
+.gantt-bar.clip-left { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.gantt-bar.clip-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+/* Amenaza aún activa: rayado para indicar continuidad */
+.gantt-bar.ongoing { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.18), rgba(255,255,255,0.18) 4px, transparent 4px, transparent 8px); }
 
 @media (max-width: 768px) {
-  .tl-toolbar { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
-  .ig-stage { padding: 1.3rem 0.7rem 1rem; }
-  .ig-label { font-size: 0.61rem; }
-  .segment-date { font-size: 0.64rem; }
-  .event-card { max-width: 112px; min-height: 108px; }
+  .gantt-axis-label-col, .gantt-row-label { width: 130px; }
+  .row-agent { display: none; }
 }
 </style>

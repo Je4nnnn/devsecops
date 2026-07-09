@@ -82,6 +82,11 @@ export default {
     return apiClient.get('/vulns/evolution/timeline-details', { params })
   },
 
+  // Línea de tiempo tipo Gantt: una barra por amenaza (vulnerabilidad única)
+  getThreatSpans: async (params = {}) => {
+    return apiClient.get('/vulns/evolution/threats', { params })
+  },
+
   // Resumen de trazabilidad (cards)
   getTraceabilitySummary: async (params = {}) => {
     return apiClient.get('/vulns/evolution/traceability-summary', { params })
