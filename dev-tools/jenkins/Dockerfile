@@ -40,7 +40,9 @@ RUN jenkins-plugin-cli --plugins \
     sonar \
     credentials-binding \
     htmlpublisher \
-    pipeline-stage-view
+    pipeline-stage-view \
+    ansicolor \
+    timestamper
 
 # Exponer puertos
 EXPOSE 8080 50000
