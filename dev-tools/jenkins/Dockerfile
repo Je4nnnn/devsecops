@@ -8,6 +8,7 @@ RUN apt-get update && \
     ca-certificates \
     curl \
     gnupg \
+    iproute2 \
     lsb-release \
     python3 \
     python3-pip
@@ -26,6 +27,9 @@ RUN curl -fsSL https://get.docker.com -o get-docker.sh && \
 # Dar permisos al usuario jenkins para usar Docker
 RUN usermod -aG docker jenkins
 
+# Configuracion inicial local: usuario admin, SonarQube y job Pipeline.
+COPY init.groovy.d/ /usr/share/jenkins/ref/init.groovy.d/
+
 # Limpiar
 RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -39,6 +43,8 @@ RUN jenkins-plugin-cli --plugins \
     docker-workflow \
     sonar \
     credentials-binding \
+    ansicolor \
+    timestamper \
     htmlpublisher \
     pipeline-stage-view
 
