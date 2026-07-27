@@ -10,7 +10,18 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-jenkins-security}"
 BACKEND_IMAGE="${BACKEND_IMAGE:-${COMPOSE_PROJECT_NAME}-api}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-${COMPOSE_PROJECT_NAME}-frontend}"
 CACHE_DIR="${TRIVY_CACHE_DIR:-$(pwd)/.trivy-cache}"
+JENKINS_CONTAINER="${JENKINS_CONTAINER:-jenkins}"
+JENKINS_HOME_DIR="${JENKINS_HOME:-/var/jenkins_home}"
+USE_JENKINS_VOLUMES=false
 IGNORE_UNFIXED_FLAG=""
+
+case "$(pwd)" in
+    "$JENKINS_HOME_DIR"/*)
+        if docker container inspect "$JENKINS_CONTAINER" >/dev/null 2>&1; then
+            USE_JENKINS_VOLUMES=true
+        fi
+        ;;
+esac
 
 if [ "$TRIVY_IGNORE_UNFIXED" = "true" ]; then
     IGNORE_UNFIXED_FLAG="--ignore-unfixed"
@@ -19,20 +30,34 @@ fi
 mkdir -p reports "$CACHE_DIR"
 
 restore_cache_owner() {
-    docker run --rm \
-        -v "$CACHE_DIR:/cache" \
-        busybox:latest \
-        chown -R "$(id -u):$(id -g)" /cache >/dev/null 2>&1 || true
+    if [ "$USE_JENKINS_VOLUMES" = "true" ]; then
+        docker run --rm \
+            --volumes-from "$JENKINS_CONTAINER" \
+            busybox:latest \
+            chown -R "$(id -u):$(id -g)" "$CACHE_DIR" >/dev/null 2>&1 || true
+    else
+        docker run --rm \
+            -v "$CACHE_DIR:/cache" \
+            busybox:latest \
+            chown -R "$(id -u):$(id -g)" /cache >/dev/null 2>&1 || true
+    fi
 }
 trap restore_cache_owner EXIT
 
 trivy() {
-    docker run --rm \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        -v "$(pwd):/workspace" \
-        -v "$CACHE_DIR:/root/.cache/trivy" \
-        -w /workspace \
-        "$TRIVY_IMAGE" "$@"
+    if [ "$USE_JENKINS_VOLUMES" = "true" ]; then
+        docker run --rm \
+            --volumes-from "$JENKINS_CONTAINER" \
+            -w "$(pwd)" \
+            "$TRIVY_IMAGE" --cache-dir "$CACHE_DIR" "$@"
+    else
+        docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$(pwd):/workspace" \
+            -v "$CACHE_DIR:/root/.cache/trivy" \
+            -w /workspace \
+            "$TRIVY_IMAGE" "$@"
+    fi
 }
 
 scan_fs() {
