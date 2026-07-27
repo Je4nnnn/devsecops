@@ -3,13 +3,41 @@ set -euo pipefail
 
 BUILD_ID=${1:?Uso: run_zap.sh <build-id>}
 NETWORK="${NETWORK:-vuln-app-wazuh_app-network}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-}"
 TARGET_API="${TARGET_API:-http://api:8000/openapi.json}"
 TARGET_FRONTEND="${TARGET_FRONTEND:-http://frontend:80}"
 API_HEALTH_URL="${API_HEALTH_URL:-http://api:8000/docs}"
 APP_USERNAME="${APP_USERNAME:-admin}"
 APP_PASSWORD="${APP_PASSWORD:-admin}"
+ZAP_DOCKER_ARGS=(
+    --user root
+    --network="${NETWORK}"
+    -v "$(pwd)/reports:/zap/wrk:rw"
+    -w /zap/wrk
+)
 
 mkdir -p reports
+
+if [ -f /.dockerenv ] && docker inspect jenkins >/dev/null 2>&1; then
+    JENKINS_HOME_SOURCE=$(docker inspect jenkins \
+        --format '{{range .Mounts}}{{if eq .Destination "/var/jenkins_home"}}{{.Source}}{{end}}{{end}}')
+
+    case "$(pwd)" in
+        /var/jenkins_home/*)
+            HOST_REPORTS="${JENKINS_HOME_SOURCE}${PWD#/var/jenkins_home}/reports"
+            ZAP_DOCKER_ARGS=(
+                --user root
+                --network="${NETWORK}"
+                -v "${HOST_REPORTS}:/zap/wrk:rw"
+                -w /zap/wrk
+            )
+            ;;
+        *)
+            echo "ERROR: no se pudo mapear el workspace de Jenkins a una ruta del host Docker." >&2
+            exit 1
+            ;;
+    esac
+fi
 
 echo "--- Iniciando escaneo DAST OWASP ZAP (Build ${BUILD_ID}) ---"
 echo "Esperando API en ${API_HEALTH_URL} dentro de la red ${NETWORK}..."
@@ -58,9 +86,7 @@ fi
 
 echo "--- ZAP API Scan ---"
 docker run --rm \
-    --user root \
-    --network="${NETWORK}" \
-    -v "$(pwd)/reports:/zap/wrk:rw" \
+    "${ZAP_DOCKER_ARGS[@]}" \
     ghcr.io/zaproxy/zaproxy:stable \
     zap-api-scan.py \
     -t "${TARGET_API}" \
@@ -77,6 +103,10 @@ until docker run --rm --network="${NETWORK}" curlimages/curl:8.12.1 \
     --output /dev/null --silent --head --fail "${TARGET_FRONTEND}"; do
     if [ "${FRONTEND_COUNT}" -eq "${MAX_RETRIES}" ]; then
         echo "ERROR: El frontend no levanto despues de $((MAX_RETRIES * 2)) segundos. Abortando ZAP."
+        if [ -n "${COMPOSE_PROJECT_NAME}" ]; then
+            COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose -f docker-compose.yml ps || true
+            COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose -f docker-compose.yml logs --tail=120 frontend || true
+        fi
         exit 1
     fi
     printf '.'
@@ -86,9 +116,7 @@ done
 echo
 
 docker run --rm \
-    --user root \
-    --network="${NETWORK}" \
-    -v "$(pwd)/reports:/zap/wrk:rw" \
+    "${ZAP_DOCKER_ARGS[@]}" \
     ghcr.io/zaproxy/zaproxy:stable \
     zap-baseline.py \
     -t "${TARGET_FRONTEND}" \

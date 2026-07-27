@@ -1,0 +1,4 @@
+services:
+  db-api:
+    image: postgres:15
+    command: ["postgres"]

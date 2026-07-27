@@ -1,0 +1,946 @@
+<?xml version="1.1" encoding="UTF-8"?>
+<flow-definition plugin="workflow-job@1590.v49101d088542">
+  <actions>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobAction plugin="pipeline-model-definition@2.2291.v2934911987b_6"/>
+    <org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction plugin="pipeline-model-definition@2.2291.v2934911987b_6">
+      <jobProperties>
+        <string>org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty</string>
+      </jobProperties>
+      <triggers/>
+      <parameters/>
+      <options>
+        <string>skipDefaultCheckout</string>
+      </options>
+    </org.jenkinsci.plugins.pipeline.modeldefinition.actions.DeclarativeJobPropertyTrackerAction>
+  </actions>
+  <description>Pipeline DevSecOps configurado automaticamente para qa-quality-gates.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
+      <abortPrevious>false</abortPrevious>
+    </org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@4357.vd3195c6b_d381">
+    <script>pipeline {
+    agent any
+
+    environment {
+        SONAR_SERVER_URL = &apos;http://sonarqube:9000&apos;
+        SONAR_PROJECT_KEY = &apos;vuln-app&apos;
+        SONAR_QUALITY_GATE_NAME = &apos;DevSecOps CI Gate&apos;
+        SONAR_MIN_COVERAGE = &apos;70&apos;
+        BACKEND_MIN_COVERAGE = &apos;70&apos;
+        FRONTEND_MIN_COVERAGE = &apos;60&apos;
+        TRIVY_IMAGE = &apos;aquasec/trivy:latest&apos;
+        TRIVY_FAIL_SEVERITIES = &apos;CRITICAL,HIGH&apos;
+        TRIVY_SEVERITY = &apos;CRITICAL,HIGH&apos;
+        TRIVY_IGNORE_UNFIXED = &apos;true&apos;
+        TRIVY_IGNORE_IDS = &apos;GHSA-537c-gmf6-5ccf&apos;
+        ZAP_FAIL_RISK_LEVELS = &apos;High&apos;
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        ansiColor(&apos;xterm&apos;)
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    stages {
+        stage(&apos;Checkout SCM&apos;) {
+            steps {
+                checkout([
+                    $class: &apos;GitSCM&apos;,
+                    branches: [[name: &apos;*/qa-quality-gates&apos;]],
+                    userRemoteConfigs: [[url: &apos;https://github.com/Je4nnnn/devsecops.git&apos;]]
+                ])
+            }
+        }
+
+        stage(&apos;CI: Backend Tests &amp; Coverage&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    mkdir -p reports
+                    docker rm -f temp-tests &gt;/dev/null 2&gt;&amp;1 || true
+                    COMPOSE_PROJECT_NAME=jenkins-ci docker compose run --name temp-tests api \
+                        sh -c &quot;PYTHONPATH=/app pytest tests --junitxml=/tmp/backend-junit.xml --cov=app --cov-report=term --cov-report=xml:coverage.xml&quot;
+                    docker cp temp-tests:/app/coverage.xml vuln-api/coverage.xml
+                    docker cp temp-tests:/tmp/backend-junit.xml &quot;reports/backend-junit_${BUILD_NUMBER}.xml&quot; || true
+                    docker rm temp-tests &gt;/dev/null
+                    sed -i &apos;s|&lt;source&gt;/app/app&lt;/source&gt;|&lt;source&gt;vuln-api/app&lt;/source&gt;|g&apos; vuln-api/coverage.xml
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;GATE: Backend Coverage&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_coverage.py \
+                        --type cobertura \
+                        --file vuln-api/coverage.xml \
+                        --minimum &quot;$BACKEND_MIN_COVERAGE&quot; \
+                        --label Backend
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;CI: Frontend Tests &amp; Build&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    cat &lt;&lt; &apos;EOF&apos; &gt; frontend/Dockerfile.test
+FROM node:24-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm config set fetch-retries 5 &amp;&amp; npm config set fetch-retry-factor 2 &amp;&amp; npm config set fetch-retry-mintimeout 20000 &amp;&amp; npm config set fetch-retry-maxtimeout 120000 &amp;&amp; npm ci --prefer-offline
+COPY . .
+RUN chown -R node:node /app
+USER node
+RUN npm run test:coverage
+EOF
+
+                    docker build -t frontend-test-img -f frontend/Dockerfile.test frontend/
+
+                    docker rm -f temp-front-tests &gt;/dev/null 2&gt;&amp;1 || true
+                    docker create --name temp-front-tests frontend-test-img &gt;/dev/null
+
+                    rm -rf frontend/coverage
+                    docker cp temp-front-tests:/app/coverage frontend/coverage
+                    docker rm temp-front-tests &gt;/dev/null
+
+                    sed -i &apos;s|SF:/app/src/|SF:frontend/src/|g&apos; frontend/coverage/lcov.info
+                    sed -i &apos;s|SF:src/|SF:frontend/src/|g&apos; frontend/coverage/lcov.info
+
+                    docker compose build --pull frontend
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;GATE: Frontend Coverage&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_coverage.py \
+                        --type lcov \
+                        --file frontend/coverage/lcov.info \
+                        --minimum &quot;$FRONTEND_MIN_COVERAGE&quot; \
+                        --label Frontend
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;SAST: Start SonarQube&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml down --remove-orphans || true
+
+                    for attempt in $(seq 1 30); do
+                        if ! command -v ss &gt;/dev/null 2&gt;&amp;1 || ! ss -ltn | grep -q &apos;:9000 &apos;; then
+                            break
+                        fi
+
+                        echo &quot;Esperando a que el puerto 9000 quede libre (${attempt}/30).&quot;
+                        sleep 2
+                    done
+
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml up -d
+
+                    echo &quot;Esperando a que SonarQube quede disponible en ${SONAR_SERVER_URL}...&quot;
+                    for attempt in $(seq 1 60); do
+                        if docker run --rm --network=sonarqube_sonar-network curlimages/curl:8.12.1 \
+                            -fsS &quot;${SONAR_SERVER_URL}/api/system/status&quot; | grep -q &apos;&quot;status&quot;:&quot;UP&quot;&apos;; then
+                            echo &quot;SonarQube esta listo.&quot;
+                            exit 0
+                        fi
+
+                        echo &quot;SonarQube aun no esta listo (${attempt}/60).&quot;
+                        sleep 5
+                    done
+
+                    echo &quot;ERROR: SonarQube no quedo listo dentro del timeout.&quot;
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml ps || true
+                    docker compose -f dev-tools/sonarqube/docker-compose.yml logs --tail=120 sonarqube || true
+                    exit 1
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;GATE: SonarQube Availability&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    docker run --rm --network=sonarqube_sonar-network curlimages/curl:8.12.1 \
+                        -fsS &quot;${SONAR_SERVER_URL}/api/system/status&quot; | grep -q &apos;&quot;status&quot;:&quot;UP&quot;&apos;
+                    echo &apos;GATE SonarQube Availability: OK&apos;
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;SAST: Configure SonarQube Quality Gate&apos;) {
+            environment {
+                SONAR_TOKEN = credentials(&apos;sonar-token&apos;)
+            }
+            steps {
+                script {
+                    docker.image(&apos;python:3.12-alpine&apos;).inside(&apos;--network=sonarqube_sonar-network --user=root&apos;) {
+                        sh &apos;&apos;&apos;
+                            set -eu
+                            cat &lt;&lt; &apos;EOF&apos; &gt; dev-tools/jenkins/scripts/configure_sonar_gate.py
+#!/usr/bin/env python3
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+SONAR_URL = os.getenv(&quot;SONAR_SERVER_URL&quot;, &quot;http://sonarqube:9000&quot;).rstrip(&quot;/&quot;)
+SONAR_TOKEN = os.getenv(&quot;SONAR_TOKEN&quot;, &quot;&quot;)
+PROJECT_KEY = os.getenv(&quot;SONAR_PROJECT_KEY&quot;, &quot;vuln-app&quot;)
+GATE_NAME = os.getenv(&quot;SONAR_QUALITY_GATE_NAME&quot;, &quot;DevSecOps CI Gate&quot;)
+MIN_COVERAGE = os.getenv(&quot;SONAR_MIN_COVERAGE&quot;, &quot;70&quot;)
+REQUIRED_CONDITIONS = {
+    &quot;coverage&quot;: (&quot;LT&quot;, MIN_COVERAGE),
+    &quot;duplicated_lines_density&quot;: (&quot;GT&quot;, &quot;3&quot;),
+    &quot;new_maintainability_rating&quot;: (&quot;GT&quot;, &quot;1&quot;),
+    &quot;new_reliability_rating&quot;: (&quot;GT&quot;, &quot;1&quot;),
+    &quot;new_security_rating&quot;: (&quot;GT&quot;, &quot;1&quot;),
+}
+
+
+def request(method, path, params=None, required=True):
+    params = params or {}
+    data = None
+    url = f&quot;{SONAR_URL}{path}&quot;
+
+    if method == &quot;GET&quot; and params:
+        url = f&quot;{url}?{urllib.parse.urlencode(params)}&quot;
+    elif method == &quot;POST&quot;:
+        data = urllib.parse.urlencode(params).encode(&quot;utf-8&quot;)
+
+    req = urllib.request.Request(url, data=data, method=method)
+    if SONAR_TOKEN:
+        auth = base64.b64encode(f&quot;{SONAR_TOKEN}:&quot;.encode(&quot;utf-8&quot;)).decode(&quot;ascii&quot;)
+        req.add_header(&quot;Authorization&quot;, f&quot;Basic {auth}&quot;)
+    if method == &quot;POST&quot;:
+        req.add_header(&quot;Content-Type&quot;, &quot;application/x-www-form-urlencoded&quot;)
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode(&quot;utf-8&quot;)
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(&quot;utf-8&quot;, errors=&quot;replace&quot;)
+        if required:
+            print(f&quot;Sonar API {method} {path} fallo: HTTP {exc.code} {body}&quot;, file=sys.stderr)
+            raise
+        return {&quot;_error&quot;: exc.code, &quot;_body&quot;: body}
+
+
+def get_gate():
+    response = request(&quot;GET&quot;, &quot;/api/qualitygates/show&quot;, {&quot;name&quot;: GATE_NAME}, required=False)
+    if &quot;_error&quot; in response:
+        return None
+    return response.get(&quot;qualityGate&quot;) or response
+
+
+def ensure_gate():
+    gate = get_gate()
+    if gate:
+        return gate
+    request(&quot;POST&quot;, &quot;/api/qualitygates/create&quot;, {&quot;name&quot;: GATE_NAME})
+    gate = get_gate()
+    if not gate:
+        raise RuntimeError(f&quot;No fue posible crear o consultar el Quality Gate {GATE_NAME}&quot;)
+    return gate
+
+
+def condition_exists(gate, metric):
+    return any(condition.get(&quot;metric&quot;) == metric for condition in gate.get(&quot;conditions&quot;, []) or [])
+
+
+def condition_matches(condition):
+    expected = REQUIRED_CONDITIONS.get(condition.get(&quot;metric&quot;))
+    if not expected:
+        return False
+    expected_op, expected_error = expected
+    return condition.get(&quot;op&quot;) == expected_op and str(condition.get(&quot;error&quot;)) == str(expected_error)
+
+
+def delete_condition(condition):
+    condition_id = condition.get(&quot;id&quot;)
+    if not condition_id:
+        print(f&quot;Sonar gate: condicion sin id no eliminada {condition}&quot;, file=sys.stderr)
+        return
+    request(&quot;POST&quot;, &quot;/api/qualitygates/delete_condition&quot;, {&quot;id&quot;: str(condition_id)})
+    print(
+        &quot;Sonar gate: condicion eliminada &quot;
+        f&quot;{condition.get(&apos;metric&apos;)} {condition.get(&apos;op&apos;)} {condition.get(&apos;error&apos;)}&quot;
+    )
+
+
+def reconcile_conditions(gate):
+    for condition in gate.get(&quot;conditions&quot;, []) or []:
+        if not condition_matches(condition):
+            delete_condition(condition)
+
+
+def add_condition(gate, metric, op, error):
+    if condition_exists(gate, metric):
+        print(f&quot;Sonar gate: condicion existente {metric}&quot;)
+        return
+
+    gate_id = str(gate.get(&quot;id&quot;) or &quot;&quot;)
+    params = {&quot;metric&quot;: metric, &quot;op&quot;: op, &quot;error&quot;: str(error)}
+    if gate_id:
+        params[&quot;gateId&quot;] = gate_id
+        response = request(&quot;POST&quot;, &quot;/api/qualitygates/create_condition&quot;, params, required=False)
+        if &quot;_error&quot; not in response:
+            print(f&quot;Sonar gate: condicion agregada {metric} {op} {error}&quot;)
+            return
+
+    params.pop(&quot;gateId&quot;, None)
+    params[&quot;gateName&quot;] = GATE_NAME
+    response = request(&quot;POST&quot;, &quot;/api/qualitygates/create_condition&quot;, params, required=False)
+    if &quot;_error&quot; in response:
+        print(
+            f&quot;Sonar gate: no se pudo agregar {metric}; respuesta: {response.get(&apos;_body&apos;, &apos;&apos;)}&quot;,
+            file=sys.stderr,
+        )
+        raise RuntimeError(f&quot;No se pudo agregar condicion {metric}&quot;)
+    print(f&quot;Sonar gate: condicion agregada {metric} {op} {error}&quot;)
+
+
+def ensure_project():
+    def project_exists():
+        response = request(&quot;GET&quot;, &quot;/api/projects/search&quot;, {&quot;projects&quot;: PROJECT_KEY}, required=False)
+        if &quot;_error&quot; in response:
+            return False
+        return any(component.get(&quot;key&quot;) == PROJECT_KEY for component in response.get(&quot;components&quot;, []))
+
+    if project_exists():
+        print(f&quot;Sonar project: {PROJECT_KEY} ya existe&quot;)
+        return
+
+    response = request(&quot;POST&quot;, &quot;/api/projects/create&quot;, {&quot;project&quot;: PROJECT_KEY, &quot;name&quot;: PROJECT_KEY}, required=False)
+    if &quot;_error&quot; not in response:
+        print(f&quot;Sonar project: {PROJECT_KEY} creado&quot;)
+        return
+
+    if response[&quot;_error&quot;] == 400 and project_exists():
+        print(f&quot;Sonar project: {PROJECT_KEY} ya existe&quot;)
+        return
+
+    print(
+        f&quot;Sonar project: no se pudo crear/verificar {PROJECT_KEY}; respuesta: {response.get(&apos;_body&apos;, &apos;&apos;)}&quot;,
+        file=sys.stderr,
+    )
+    raise RuntimeError(f&quot;No se pudo crear/verificar proyecto {PROJECT_KEY}&quot;)
+
+
+def main():
+    if not SONAR_TOKEN:
+        print(&quot;SONAR_TOKEN no esta configurado&quot;, file=sys.stderr)
+        return 2
+
+    gate = ensure_gate()
+    reconcile_conditions(gate)
+    gate = get_gate()
+    for metric, (op, error) in REQUIRED_CONDITIONS.items():
+        add_condition(gate, metric, op, error)
+
+    ensure_project()
+    request(&quot;POST&quot;, &quot;/api/qualitygates/select&quot;, {&quot;projectKey&quot;: PROJECT_KEY, &quot;gateName&quot;: GATE_NAME})
+    print(f&quot;Sonar gate: {GATE_NAME} asignado a {PROJECT_KEY}&quot;)
+    return 0
+
+
+if __name__ == &quot;__main__&quot;:
+    raise SystemExit(main())
+EOF
+python3 dev-tools/jenkins/scripts/configure_sonar_gate.py
+                        &apos;&apos;&apos;
+                    }
+                }
+            }
+        }
+
+        stage(&apos;SAST: SonarQube Code Analysis&apos;) {
+            environment {
+                SONAR_TOKEN = credentials(&apos;sonar-token&apos;)
+            }
+            steps {
+                script {
+                    withSonarQubeEnv(&apos;sonarqube&apos;) {
+                        docker.image(&apos;sonarsource/sonar-scanner-cli&apos;).inside(&apos;--network=sonarqube_sonar-network --user=root&apos;) {
+                            sh &apos;&apos;&apos;
+                                set -eu
+                                sonar-scanner \
+                                    -Dproject.settings=dev-tools/sonarqube/sonar-project.properties \
+                                    -Dsonar.projectBaseDir=. \
+                                    -Dsonar.host.url=$SONAR_SERVER_URL \
+                                    -Dsonar.token=$SONAR_TOKEN
+                            &apos;&apos;&apos;
+                        }
+                    }
+                }
+            }
+        }
+
+        stage(&apos;GATE: SonarQube Quality Gate&apos;) {
+            environment {
+                SONAR_TOKEN = credentials(&apos;sonar-token&apos;)
+            }
+            steps {
+                script {
+                    timeout(time: 5, unit: &apos;MINUTES&apos;) {
+                        docker.image(&apos;python:3.12-alpine&apos;).inside(&apos;--network=sonarqube_sonar-network --user=root&apos;) {
+                            sh &apos;&apos;&apos;
+                                set -eu
+
+                                report_file=&quot;.scannerwork/report-task.txt&quot;
+                                if [ ! -f &quot;$report_file&quot; ]; then
+                                    echo &quot;No se encontro $report_file&quot;
+                                    exit 1
+                                fi
+
+                                ceTaskId=$(grep &apos;^ceTaskId=&apos; &quot;$report_file&quot; | cut -d= -f2-)
+                                serverUrl=&quot;$SONAR_SERVER_URL&quot;
+
+                                if [ -z &quot;$ceTaskId&quot; ]; then
+                                    echo &quot;No fue posible obtener ceTaskId para el Quality Gate&quot;
+                                    exit 1
+                                fi
+
+                                echo &quot;Esperando resultado de SonarQube para task: $ceTaskId&quot;
+
+                                elapsed=0
+                                analysisId=&quot;&quot;
+                                while [ &quot;$elapsed&quot; -lt 300 ]; do
+                                    response=$(python3 - &lt;&lt;PY
+import base64
+import json
+import os
+import sys
+import urllib.request
+
+url = &quot;${serverUrl}/api/ce/task?id=${ceTaskId}&quot;
+token = os.environ[&quot;SONAR_TOKEN&quot;]
+req = urllib.request.Request(url)
+req.add_header(&quot;Authorization&quot;, &quot;Basic &quot; + base64.b64encode(f&quot;{token}:&quot;.encode()).decode())
+with urllib.request.urlopen(req, timeout=30) as resp:
+    sys.stdout.write(resp.read().decode())
+PY
+)
+                                    status=$(printf &apos;%s&apos; &quot;$response&quot; | python3 -c &apos;import sys, json; print(json.load(sys.stdin)[&quot;task&quot;][&quot;status&quot;])&apos;)
+
+                                    if [ &quot;$status&quot; = &quot;SUCCESS&quot; ]; then
+                                        analysisId=$(printf &apos;%s&apos; &quot;$response&quot; | python3 -c &apos;import sys, json; print(json.load(sys.stdin)[&quot;task&quot;].get(&quot;analysisId&quot;, &quot;&quot;))&apos;)
+                                        break
+                                    fi
+
+                                    if [ &quot;$status&quot; = &quot;FAILED&quot; ] || [ &quot;$status&quot; = &quot;CANCELED&quot; ]; then
+                                        echo &quot;La tarea de SonarQube termino con estado: $status&quot;
+                                        exit 1
+                                    fi
+
+                                    echo &quot;Estado actual de SonarQube: $status&quot;
+                                    sleep 5
+                                    elapsed=$((elapsed + 5))
+                                done
+
+                                if [ -z &quot;$analysisId&quot; ]; then
+                                    echo &quot;SonarQube no entrego analysisId dentro del timeout&quot;
+                                    exit 1
+                                fi
+
+                                gate=$(python3 - &lt;&lt;PY
+import base64
+import json
+import os
+import urllib.request
+
+url = &quot;${serverUrl}/api/qualitygates/project_status?analysisId=${analysisId}&quot;
+token = os.environ[&quot;SONAR_TOKEN&quot;]
+req = urllib.request.Request(url)
+req.add_header(&quot;Authorization&quot;, &quot;Basic &quot; + base64.b64encode(f&quot;{token}:&quot;.encode()).decode())
+with urllib.request.urlopen(req, timeout=30) as resp:
+    data = json.loads(resp.read().decode())
+project_status = data[&quot;projectStatus&quot;]
+for condition in project_status.get(&quot;conditions&quot;, []):
+    print(
+        &quot;Condition: {metric} {op} {error} actual={actual} status={status}&quot;.format(
+            metric=condition.get(&quot;metricKey&quot;, &quot;unknown&quot;),
+            op=condition.get(&quot;comparator&quot;, &quot;&quot;),
+            error=condition.get(&quot;errorThreshold&quot;, &quot;&quot;),
+            actual=condition.get(&quot;actualValue&quot;, &quot;&quot;),
+            status=condition.get(&quot;status&quot;, &quot;&quot;),
+        ),
+        file=__import__(&quot;sys&quot;).stderr,
+    )
+print(project_status[&quot;status&quot;])
+PY
+)
+                                echo &quot;Quality Gate: $gate&quot;
+
+                                if [ &quot;$gate&quot; != &quot;OK&quot; ]; then
+                                    echo &quot;Quality Gate fallo con estado: $gate&quot;
+                                    exit 1
+                                fi
+                            &apos;&apos;&apos;
+                        }
+                    }
+                }
+            }
+        }
+
+        stage(&apos;SCA: Trivy Dependency Scan&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    cat &lt;&lt; &apos;EOF&apos; &gt; dev-tools/jenkins/scripts/run_trivy.sh
+#!/bin/sh
+set -eu
+
+BUILD_ID=&quot;${1:?Uso: run_trivy.sh &lt;build-id&gt; [fs|images|all]}&quot;
+MODE=&quot;${2:-all}&quot;
+TRIVY_IMAGE=&quot;${TRIVY_IMAGE:-aquasec/trivy:latest}&quot;
+TRIVY_SEVERITY=&quot;${TRIVY_SEVERITY:-${TRIVY_FAIL_SEVERITIES:-CRITICAL,HIGH}}&quot;
+TRIVY_IGNORE_UNFIXED=&quot;${TRIVY_IGNORE_UNFIXED:-true}&quot;
+COMPOSE_PROJECT_NAME=&quot;${COMPOSE_PROJECT_NAME:-jenkins-security}&quot;
+BACKEND_IMAGE=&quot;${BACKEND_IMAGE:-${COMPOSE_PROJECT_NAME}-api}&quot;
+FRONTEND_IMAGE=&quot;${FRONTEND_IMAGE:-${COMPOSE_PROJECT_NAME}-frontend}&quot;
+CACHE_DIR=&quot;${TRIVY_CACHE_DIR:-$(pwd)/.trivy-cache}&quot;
+IGNORE_UNFIXED_FLAG=&quot;&quot;
+WORKSPACE_MOUNT_ARGS=&quot;-v $(pwd):/workspace&quot;
+TRIVY_WORKDIR=&quot;/workspace&quot;
+TRIVY_CACHE_IN_CONTAINER=&quot;/workspace/.trivy-cache&quot;
+BUSYBOX_MOUNT_ARGS=&quot;-v $(pwd):/workspace&quot;
+BUSYBOX_CACHE_DIR=&quot;/workspace/.trivy-cache&quot;
+
+if [ -f /.dockerenv ] &amp;&amp; docker inspect jenkins &gt;/dev/null 2&gt;&amp;1; then
+    WORKSPACE_MOUNT_ARGS=&quot;--volumes-from jenkins&quot;
+    TRIVY_WORKDIR=&quot;$(pwd)&quot;
+    TRIVY_CACHE_IN_CONTAINER=&quot;$CACHE_DIR&quot;
+    BUSYBOX_MOUNT_ARGS=&quot;--volumes-from jenkins&quot;
+    BUSYBOX_CACHE_DIR=&quot;$CACHE_DIR&quot;
+fi
+
+if [ &quot;$TRIVY_IGNORE_UNFIXED&quot; = &quot;true&quot; ]; then
+    IGNORE_UNFIXED_FLAG=&quot;--ignore-unfixed&quot;
+fi
+
+mkdir -p reports &quot;$CACHE_DIR&quot;
+
+restore_cache_owner() {
+    docker run --rm \
+        $BUSYBOX_MOUNT_ARGS \
+        -w &quot;$TRIVY_WORKDIR&quot; \
+        busybox:latest \
+        chown -R &quot;$(id -u):$(id -g)&quot; &quot;$BUSYBOX_CACHE_DIR&quot; &gt;/dev/null 2&gt;&amp;1 || true
+}
+trap restore_cache_owner EXIT
+
+trivy() {
+    docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        $WORKSPACE_MOUNT_ARGS \
+        -w &quot;$TRIVY_WORKDIR&quot; \
+        &quot;$TRIVY_IMAGE&quot; --cache-dir &quot;$TRIVY_CACHE_IN_CONTAINER&quot; &quot;$@&quot;
+}
+
+scan_fs() {
+    echo &quot;--- Trivy FS/SCA: dependencias e IaC ---&quot;
+    trivy fs \
+        --scanners vuln,misconfig \
+        --severity &quot;$TRIVY_SEVERITY&quot; \
+        $IGNORE_UNFIXED_FLAG \
+        --exit-code 0 \
+        --skip-dirs .git \
+        --skip-dirs frontend/node_modules \
+        --skip-dirs frontend/dist \
+        --skip-dirs reports \
+        --skip-dirs .trivy-cache \
+        --format json \
+        --output &quot;reports/trivy_fs_${BUILD_ID}.json&quot; \
+        .
+}
+
+scan_image() {
+    image=&quot;$1&quot;
+    output=&quot;$2&quot;
+    echo &quot;--- Trivy Image: $image ---&quot;
+    docker image inspect &quot;$image&quot; &gt;/dev/null
+    trivy image \
+        --severity &quot;$TRIVY_SEVERITY&quot; \
+        $IGNORE_UNFIXED_FLAG \
+        --exit-code 0 \
+        --format json \
+        --output &quot;$output&quot; \
+        &quot;$image&quot;
+}
+
+case &quot;$MODE&quot; in
+    fs)
+        scan_fs
+        ;;
+    images)
+        scan_image &quot;$BACKEND_IMAGE&quot; &quot;reports/trivy_backend_image_${BUILD_ID}.json&quot;
+        scan_image &quot;$FRONTEND_IMAGE&quot; &quot;reports/trivy_frontend_image_${BUILD_ID}.json&quot;
+        ;;
+    all)
+        scan_fs
+        scan_image &quot;$BACKEND_IMAGE&quot; &quot;reports/trivy_backend_image_${BUILD_ID}.json&quot;
+        scan_image &quot;$FRONTEND_IMAGE&quot; &quot;reports/trivy_frontend_image_${BUILD_ID}.json&quot;
+        ;;
+    *)
+        echo &quot;Modo Trivy invalido: $MODE&quot; &gt;&amp;2
+        exit 2
+        ;;
+esac
+EOF
+cat &lt;&lt; &apos;EOF&apos; &gt; dev-tools/jenkins/scripts/gate_trivy.py
+#!/usr/bin/env python3
+import json
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+
+FAIL_SEVERITIES = {s.strip().upper() for s in os.getenv(&quot;TRIVY_FAIL_SEVERITIES&quot;, &quot;CRITICAL,HIGH&quot;).split(&quot;,&quot;) if s.strip()}
+IGNORE_IDS = {s.strip() for s in os.getenv(&quot;TRIVY_IGNORE_IDS&quot;, &quot;&quot;).split(&quot;,&quot;) if s.strip()}
+
+
+def iter_findings(data):
+    for result in data.get(&quot;Results&quot;, []) or []:
+        target = result.get(&quot;Target&quot;, &quot;unknown&quot;)
+        for vuln in result.get(&quot;Vulnerabilities&quot;, []) or []:
+            yield {
+                &quot;type&quot;: &quot;vulnerability&quot;,
+                &quot;target&quot;: target,
+                &quot;id&quot;: vuln.get(&quot;VulnerabilityID&quot;, &quot;unknown&quot;),
+                &quot;severity&quot;: (vuln.get(&quot;Severity&quot;) or &quot;UNKNOWN&quot;).upper(),
+                &quot;package&quot;: vuln.get(&quot;PkgName&quot;, &quot;&quot;),
+                &quot;title&quot;: vuln.get(&quot;Title&quot;, &quot;&quot;),
+            }
+        for misconfig in result.get(&quot;Misconfigurations&quot;, []) or []:
+            yield {
+                &quot;type&quot;: &quot;misconfiguration&quot;,
+                &quot;target&quot;: target,
+                &quot;id&quot;: misconfig.get(&quot;ID&quot;, &quot;unknown&quot;),
+                &quot;severity&quot;: (misconfig.get(&quot;Severity&quot;) or &quot;UNKNOWN&quot;).upper(),
+                &quot;package&quot;: misconfig.get(&quot;Type&quot;, &quot;&quot;),
+                &quot;title&quot;: misconfig.get(&quot;Title&quot;, &quot;&quot;),
+            }
+        for secret in result.get(&quot;Secrets&quot;, []) or []:
+            yield {
+                &quot;type&quot;: &quot;secret&quot;,
+                &quot;target&quot;: target,
+                &quot;id&quot;: secret.get(&quot;RuleID&quot;, &quot;unknown&quot;),
+                &quot;severity&quot;: (secret.get(&quot;Severity&quot;) or &quot;UNKNOWN&quot;).upper(),
+                &quot;package&quot;: &quot;&quot;,
+                &quot;title&quot;: secret.get(&quot;Title&quot;, &quot;&quot;),
+            }
+
+
+def main() -&gt; int:
+    if len(sys.argv) &lt; 2:
+        print(&quot;Uso: gate_trivy.py &lt;reporte-json&gt; [&lt;reporte-json&gt; ...]&quot;, file=sys.stderr)
+        return 2
+
+    failing = []
+    totals = Counter()
+
+    for report in sys.argv[1:]:
+        path = Path(report)
+        if not path.exists():
+            print(f&quot;GATE Trivy: falta reporte {path}&quot;, file=sys.stderr)
+            return 1
+        data = json.loads(path.read_text(encoding=&quot;utf-8&quot;))
+        for finding in iter_findings(data):
+            totals[finding[&quot;severity&quot;]] += 1
+            if finding[&quot;id&quot;] in IGNORE_IDS:
+                print(f&quot;GATE Trivy: hallazgo aceptado por excepcion {finding[&apos;id&apos;]} en {finding[&apos;target&apos;]}&quot;)
+                continue
+            if finding[&quot;severity&quot;] in FAIL_SEVERITIES:
+                failing.append((path.name, finding))
+
+    print(f&quot;GATE Trivy: severidades evaluadas para fallo: {&apos;, &apos;.join(sorted(FAIL_SEVERITIES))}&quot;)
+    print(&quot;GATE Trivy: resumen &quot; + &quot;, &quot;.join(f&quot;{k}={v}&quot; for k, v in sorted(totals.items())) if totals else &quot;GATE Trivy: sin hallazgos&quot;)
+
+    if failing:
+        print(f&quot;GATE Trivy: FAIL, hallazgos bloqueantes={len(failing)}&quot;, file=sys.stderr)
+        for report, finding in failing[:25]:
+            print(
+                f&quot;- {report}: {finding[&apos;severity&apos;]} {finding[&apos;id&apos;]} &quot;
+                f&quot;{finding[&apos;package&apos;]} {finding[&apos;target&apos;]} {finding[&apos;title&apos;]}&quot;.strip(),
+                file=sys.stderr,
+            )
+        if len(failing) &gt; 25:
+            print(f&quot;- ... {len(failing) - 25} hallazgos adicionales&quot;, file=sys.stderr)
+        return 1
+
+    print(&quot;GATE Trivy: OK&quot;)
+    return 0
+
+
+if __name__ == &quot;__main__&quot;:
+    raise SystemExit(main())
+EOF
+chmod +x dev-tools/jenkins/scripts/run_trivy.sh
+                    ./dev-tools/jenkins/scripts/run_trivy.sh &quot;$BUILD_NUMBER&quot; fs
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;GATE: Trivy SCA&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_trivy.py &quot;reports/trivy_fs_${BUILD_NUMBER}.json&quot;
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;Container: Build Images for Trivy&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    COMPOSE_PROJECT_NAME=jenkins-security docker compose -f docker-compose.yml build --pull --no-cache api frontend
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;Container: Trivy Image Scan&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    COMPOSE_PROJECT_NAME=jenkins-security ./dev-tools/jenkins/scripts/run_trivy.sh &quot;$BUILD_NUMBER&quot; images
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;GATE: Trivy Containers&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_trivy.py \
+                        &quot;reports/trivy_backend_image_${BUILD_NUMBER}.json&quot; \
+                        &quot;reports/trivy_frontend_image_${BUILD_NUMBER}.json&quot;
+                &apos;&apos;&apos;
+            }
+        }
+
+        stage(&apos;DAST: OWASP ZAP Dynamic Scan&apos;) {
+            steps {
+                script {
+                    withEnv([
+                        &apos;COMPOSE_PROJECT_NAME=jenkins-dast&apos;,
+                        &apos;NETWORK=jenkins-dast_app-network&apos;,
+                        &apos;TARGET_API=http://api:8000/openapi.json&apos;,
+                        &apos;TARGET_FRONTEND=http://frontend:80&apos;,
+                        &apos;DB_HOST_PORT=0&apos;,
+                        &apos;FRONTEND_HTTP_PORT=0&apos;,
+                        &apos;FRONTEND_HTTPS_PORT=0&apos;
+                    ]) {
+                        sh &apos;docker compose -f docker-compose.yml up -d db-api api&apos;
+                        sh &apos;&apos;&apos;
+                            cat &lt;&lt; &apos;EOF&apos; &gt; frontend/nginx.conf
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+                        &apos;&apos;&apos;
+                        sh &apos;docker compose -f docker-compose.yml build --pull --no-cache frontend&apos;
+                        sh &apos;docker compose -f docker-compose.yml up -d frontend&apos;
+                        sh &apos;mkdir -p reports &amp;&amp; chmod 777 reports&apos;
+                        sh &apos;&apos;&apos;
+                            cat &lt;&lt; &apos;EOF&apos; &gt; dev-tools/jenkins/scripts/run_zap.sh
+#!/bin/bash
+set -euo pipefail
+
+BUILD_ID=${1:?Uso: run_zap.sh &lt;build-id&gt;}
+NETWORK=&quot;${NETWORK:-vuln-app-wazuh_app-network}&quot;
+COMPOSE_PROJECT_NAME=&quot;${COMPOSE_PROJECT_NAME:-}&quot;
+TARGET_API=&quot;${TARGET_API:-http://api:8000/openapi.json}&quot;
+TARGET_FRONTEND=&quot;${TARGET_FRONTEND:-http://frontend:80}&quot;
+API_HEALTH_URL=&quot;${API_HEALTH_URL:-http://api:8000/docs}&quot;
+APP_USERNAME=&quot;${APP_USERNAME:-admin}&quot;
+APP_PASSWORD=&quot;${APP_PASSWORD:-admin}&quot;
+ZAP_DOCKER_ARGS=(
+    --user root
+    --network=&quot;${NETWORK}&quot;
+    -v &quot;$(pwd)/reports:/zap/wrk:rw&quot;
+    -w /zap/wrk
+)
+
+mkdir -p reports
+
+if [ -f /.dockerenv ] &amp;&amp; docker inspect jenkins &gt;/dev/null 2&gt;&amp;1; then
+    JENKINS_HOME_SOURCE=$(docker inspect jenkins \
+        --format &apos;{{range .Mounts}}{{if eq .Destination &quot;/var/jenkins_home&quot;}}{{.Source}}{{end}}{{end}}&apos;)
+
+    case &quot;$(pwd)&quot; in
+        /var/jenkins_home/*)
+            HOST_REPORTS=&quot;${JENKINS_HOME_SOURCE}${PWD#/var/jenkins_home}/reports&quot;
+            ZAP_DOCKER_ARGS=(
+                --user root
+                --network=&quot;${NETWORK}&quot;
+                -v &quot;${HOST_REPORTS}:/zap/wrk:rw&quot;
+                -w /zap/wrk
+            )
+            ;;
+        *)
+            echo &quot;ERROR: no se pudo mapear el workspace de Jenkins a una ruta del host Docker.&quot; &gt;&amp;2
+            exit 1
+            ;;
+    esac
+fi
+
+echo &quot;--- Iniciando escaneo DAST OWASP ZAP (Build ${BUILD_ID}) ---&quot;
+echo &quot;Esperando API en ${API_HEALTH_URL} dentro de la red ${NETWORK}...&quot;
+
+MAX_RETRIES=30
+COUNT=0
+
+probe_in_network() {
+    docker run --rm --network=&quot;${NETWORK}&quot; curlimages/curl:8.12.1 \
+        --output /dev/null --silent --head --fail &quot;${API_HEALTH_URL}&quot;
+}
+
+until probe_in_network; do
+    if [ &quot;${COUNT}&quot; -eq &quot;${MAX_RETRIES}&quot; ]; then
+        echo &quot;ERROR: La API no levanto despues de $((MAX_RETRIES * 2)) segundos. Abortando ZAP.&quot;
+        exit 1
+    fi
+    printf &apos;.&apos;
+    sleep 2
+    COUNT=$((COUNT + 1))
+done
+
+echo
+echo &quot;API lista. Obteniendo token de acceso para escaneo autenticado...&quot;
+RESPONSE=$(docker run --rm --network=&quot;${NETWORK}&quot; curlimages/curl:8.12.1 \
+    -s -X POST http://api:8000/auth/login \
+    -H &quot;Content-Type: application/x-www-form-urlencoded&quot; \
+    -d &quot;username=${APP_USERNAME}&amp;password=${APP_PASSWORD}&quot;)
+
+TOKEN=$(printf &apos;%s&apos; &quot;${RESPONSE}&quot; | python3 -c &quot;import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get(&apos;access_token&apos;, &apos;&apos;))
+except Exception:
+    print(&apos;&apos;)&quot;)
+
+ZAP_AUTH_ARGS=()
+if [ -n &quot;${TOKEN}&quot; ]; then
+    echo &quot;Token obtenido. El escaneo API usara header Authorization.&quot;
+    ZAP_AUTH_ARGS=(
+        -z &quot;-config replacer.full_list(0).description=auth-header -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Authorization -config replacer.full_list(0).replacement=Bearer ${TOKEN}&quot;
+    )
+else
+    echo &quot;No se obtuvo token. ZAP continuara sin autenticacion.&quot;
+fi
+
+echo &quot;--- ZAP API Scan ---&quot;
+docker run --rm \
+    &quot;${ZAP_DOCKER_ARGS[@]}&quot; \
+    ghcr.io/zaproxy/zaproxy:stable \
+    zap-api-scan.py \
+    -t &quot;${TARGET_API}&quot; \
+    -f openapi \
+    -r &quot;zap_api_report_${BUILD_ID}.html&quot; \
+    -J &quot;zap_api_report_${BUILD_ID}.json&quot; \
+    -I \
+    &quot;${ZAP_AUTH_ARGS[@]}&quot;
+
+echo &quot;--- ZAP Frontend Baseline ---&quot;
+echo &quot;Esperando frontend en ${TARGET_FRONTEND} dentro de la red ${NETWORK}...&quot;
+FRONTEND_COUNT=0
+until docker run --rm --network=&quot;${NETWORK}&quot; curlimages/curl:8.12.1 \
+    --output /dev/null --silent --head --fail &quot;${TARGET_FRONTEND}&quot;; do
+    if [ &quot;${FRONTEND_COUNT}&quot; -eq &quot;${MAX_RETRIES}&quot; ]; then
+        echo &quot;ERROR: El frontend no levanto despues de $((MAX_RETRIES * 2)) segundos. Abortando ZAP.&quot;
+        if [ -n &quot;${COMPOSE_PROJECT_NAME}&quot; ]; then
+            COMPOSE_PROJECT_NAME=&quot;${COMPOSE_PROJECT_NAME}&quot; docker compose -f docker-compose.yml ps || true
+            COMPOSE_PROJECT_NAME=&quot;${COMPOSE_PROJECT_NAME}&quot; docker compose -f docker-compose.yml logs --tail=120 frontend || true
+        fi
+        exit 1
+    fi
+    printf &apos;.&apos;
+    sleep 2
+    FRONTEND_COUNT=$((FRONTEND_COUNT + 1))
+done
+echo
+
+docker run --rm \
+    &quot;${ZAP_DOCKER_ARGS[@]}&quot; \
+    ghcr.io/zaproxy/zaproxy:stable \
+    zap-baseline.py \
+    -t &quot;${TARGET_FRONTEND}&quot; \
+    -r &quot;zap_frontend_report_${BUILD_ID}.html&quot; \
+    -J &quot;zap_frontend_report_${BUILD_ID}.json&quot; \
+    -I
+EOF
+chmod +x dev-tools/jenkins/scripts/run_zap.sh
+                        &apos;&apos;&apos;
+                        sh &apos;./dev-tools/jenkins/scripts/run_zap.sh &quot;$BUILD_NUMBER&quot;&apos;
+                    }
+                }
+            }
+        }
+
+        stage(&apos;GATE: OWASP ZAP&apos;) {
+            steps {
+                sh &apos;&apos;&apos;
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_zap.py \
+                        &quot;reports/zap_api_report_${BUILD_NUMBER}.json&quot; \
+                        &quot;reports/zap_frontend_report_${BUILD_NUMBER}.json&quot;
+                &apos;&apos;&apos;
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def scanId = env.BUILD_NUMBER
+                archiveArtifacts artifacts: &quot;reports/*_${scanId}.html, reports/*_${scanId}.json, reports/*_${scanId}.xml, vuln-api/coverage.xml, frontend/coverage/lcov.info&quot;,
+                    onlyIfSuccessful: false,
+                    allowEmptyArchive: true
+            }
+            sh &apos;docker rm -f temp-tests temp-front-tests jenkins-dast-frontend &gt;/dev/null 2&gt;&amp;1 || true&apos;
+            sh &apos;COMPOSE_PROJECT_NAME=jenkins-dast docker compose -f docker-compose.yml down -v || true&apos;
+            sh &apos;COMPOSE_PROJECT_NAME=jenkins-ci docker compose -f docker-compose.yml down -v || true&apos;
+            sh &apos;docker ps -a&apos;
+        }
+    }
+}
+</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

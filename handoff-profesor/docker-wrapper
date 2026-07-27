@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+REAL_DOCKER=/usr/bin/docker
+OVERRIDE_FILE=/var/jenkins_home/ci-overrides/docker-compose.postgres-ci.yml
+
+if [ "${1:-}" = "compose" ]; then
+    shift
+    args=" $* "
+
+    case "$args" in
+        *" dev-tools/sonarqube/docker-compose.yml "*|*" dev-tools\\sonarqube\\docker-compose.yml "*)
+            exec "$REAL_DOCKER" compose "$@"
+            ;;
+    esac
+
+    has_file=0
+    new_args=""
+    prev_was_file=0
+    injected=0
+
+    for arg in "$@"; do
+        if [ "$prev_was_file" = "1" ]; then
+            has_file=1
+            new_args="$new_args '$arg'"
+            if [ "$arg" = "docker-compose.yml" ] || [ "$arg" = "./docker-compose.yml" ]; then
+                new_args="$new_args -f '$OVERRIDE_FILE'"
+                injected=1
+            fi
+            prev_was_file=0
+            continue
+        fi
+
+        if [ "$arg" = "-f" ] || [ "$arg" = "--file" ]; then
+            new_args="$new_args '$arg'"
+            prev_was_file=1
+            continue
+        fi
+
+        new_args="$new_args '$arg'"
+    done
+
+    if [ "$has_file" = "0" ] && [ -f docker-compose.yml ]; then
+        exec "$REAL_DOCKER" compose -f docker-compose.yml -f "$OVERRIDE_FILE" "$@"
+    fi
+
+    if [ "$injected" = "1" ]; then
+        eval "exec \"$REAL_DOCKER\" compose $new_args"
+    fi
+
+    exec "$REAL_DOCKER" compose "$@"
+fi
+
+exec "$REAL_DOCKER" "$@"
