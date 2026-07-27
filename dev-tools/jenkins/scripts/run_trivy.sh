@@ -11,6 +11,19 @@ BACKEND_IMAGE="${BACKEND_IMAGE:-${COMPOSE_PROJECT_NAME}-api}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-${COMPOSE_PROJECT_NAME}-frontend}"
 CACHE_DIR="${TRIVY_CACHE_DIR:-$(pwd)/.trivy-cache}"
 IGNORE_UNFIXED_FLAG=""
+WORKSPACE_MOUNT_ARGS="-v $(pwd):/workspace"
+TRIVY_WORKDIR="/workspace"
+TRIVY_CACHE_IN_CONTAINER="/workspace/.trivy-cache"
+BUSYBOX_MOUNT_ARGS="-v $(pwd):/workspace"
+BUSYBOX_CACHE_DIR="/workspace/.trivy-cache"
+
+if [ -f /.dockerenv ] && docker inspect jenkins >/dev/null 2>&1; then
+    WORKSPACE_MOUNT_ARGS="--volumes-from jenkins"
+    TRIVY_WORKDIR="$(pwd)"
+    TRIVY_CACHE_IN_CONTAINER="$CACHE_DIR"
+    BUSYBOX_MOUNT_ARGS="--volumes-from jenkins"
+    BUSYBOX_CACHE_DIR="$CACHE_DIR"
+fi
 
 if [ "$TRIVY_IGNORE_UNFIXED" = "true" ]; then
     IGNORE_UNFIXED_FLAG="--ignore-unfixed"
@@ -20,19 +33,19 @@ mkdir -p reports "$CACHE_DIR"
 
 restore_cache_owner() {
     docker run --rm \
-        -v "$CACHE_DIR:/cache" \
+        $BUSYBOX_MOUNT_ARGS \
+        -w "$TRIVY_WORKDIR" \
         busybox:latest \
-        chown -R "$(id -u):$(id -g)" /cache >/dev/null 2>&1 || true
+        chown -R "$(id -u):$(id -g)" "$BUSYBOX_CACHE_DIR" >/dev/null 2>&1 || true
 }
 trap restore_cache_owner EXIT
 
 trivy() {
     docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
-        -v "$(pwd):/workspace" \
-        -v "$CACHE_DIR:/root/.cache/trivy" \
-        -w /workspace \
-        "$TRIVY_IMAGE" "$@"
+        $WORKSPACE_MOUNT_ARGS \
+        -w "$TRIVY_WORKDIR" \
+        "$TRIVY_IMAGE" --cache-dir "$TRIVY_CACHE_IN_CONTAINER" "$@"
 }
 
 scan_fs() {

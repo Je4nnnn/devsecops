@@ -58,7 +58,7 @@ def main() -> int:
         for finding in iter_findings(data):
             totals[finding["severity"]] += 1
             if finding["id"] in IGNORE_IDS:
-                print(f"GATE Trivy: hallazgo aceptado por excepcion {finding['id']} en {target}")
+                print(f"GATE Trivy: hallazgo aceptado por excepcion {finding['id']} en {finding['target']}")
                 continue
             if finding["severity"] in FAIL_SEVERITIES:
                 failing.append((path.name, finding))

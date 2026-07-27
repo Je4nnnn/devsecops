@@ -2,8 +2,8 @@ name: vuln-app-wazuh
 
 services:
   db-api:
-    image: timescale/timescaledb:latest-pg15
-    command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
+    image: ${DB_IMAGE:-timescale/timescaledb:latest-pg15}
+    command: ${DB_COMMAND:-postgres -c shared_preload_libraries=timescaledb}
     restart: unless-stopped
     env_file:
       - .env

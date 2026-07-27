@@ -125,6 +125,33 @@ def add_condition(gate, metric, op, error):
     print(f"Sonar gate: condicion agregada {metric} {op} {error}")
 
 
+def ensure_project():
+    def project_exists():
+        response = request("GET", "/api/projects/search", {"projects": PROJECT_KEY}, required=False)
+        if "_error" in response:
+            return False
+        return any(component.get("key") == PROJECT_KEY for component in response.get("components", []))
+
+    if project_exists():
+        print(f"Sonar project: {PROJECT_KEY} ya existe")
+        return
+
+    response = request("POST", "/api/projects/create", {"project": PROJECT_KEY, "name": PROJECT_KEY}, required=False)
+    if "_error" not in response:
+        print(f"Sonar project: {PROJECT_KEY} creado")
+        return
+
+    if response["_error"] == 400 and project_exists():
+        print(f"Sonar project: {PROJECT_KEY} ya existe")
+        return
+
+    print(
+        f"Sonar project: no se pudo crear/verificar {PROJECT_KEY}; respuesta: {response.get('_body', '')}",
+        file=sys.stderr,
+    )
+    raise RuntimeError(f"No se pudo crear/verificar proyecto {PROJECT_KEY}")
+
+
 def main():
     if not SONAR_TOKEN:
         print("SONAR_TOKEN no esta configurado", file=sys.stderr)
@@ -136,6 +163,7 @@ def main():
     for metric, (op, error) in REQUIRED_CONDITIONS.items():
         add_condition(gate, metric, op, error)
 
+    ensure_project()
     request("POST", "/api/qualitygates/select", {"projectKey": PROJECT_KEY, "gateName": GATE_NAME})
     print(f"Sonar gate: {GATE_NAME} asignado a {PROJECT_KEY}")
     return 0

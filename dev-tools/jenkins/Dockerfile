@@ -46,7 +46,8 @@ RUN jenkins-plugin-cli --plugins \
     ansicolor \
     timestamper \
     htmlpublisher \
-    pipeline-stage-view
+    pipeline-stage-view \
+    ansicolor
 
 # Exponer puertos
 EXPOSE 8080 50000
