@@ -8,6 +8,17 @@ TARGET_FRONTEND="${TARGET_FRONTEND:-http://frontend:80}"
 API_HEALTH_URL="${API_HEALTH_URL:-http://api:8000/docs}"
 APP_USERNAME="${APP_USERNAME:-admin}"
 APP_PASSWORD="${APP_PASSWORD:-admin}"
+JENKINS_CONTAINER="${JENKINS_CONTAINER:-jenkins}"
+JENKINS_HOME_DIR="${JENKINS_HOME:-/var/jenkins_home}"
+USE_JENKINS_VOLUMES=false
+
+case "$(pwd)" in
+    "$JENKINS_HOME_DIR"/*)
+        if docker container inspect "$JENKINS_CONTAINER" >/dev/null 2>&1; then
+            USE_JENKINS_VOLUMES=true
+        fi
+        ;;
+esac
 
 mkdir -p reports
 
@@ -20,6 +31,27 @@ COUNT=0
 probe_in_network() {
     docker run --rm --network="${NETWORK}" curlimages/curl:8.12.1 \
         --output /dev/null --silent --head --fail "${API_HEALTH_URL}"
+}
+
+zap() {
+    if [ "$USE_JENKINS_VOLUMES" = "true" ]; then
+        docker run --rm \
+            --user root \
+            --network="${NETWORK}" \
+            --volumes-from "$JENKINS_CONTAINER" \
+            -e "ZAP_REPORT_DIR=$(pwd)/reports" \
+            --entrypoint /bin/bash \
+            ghcr.io/zaproxy/zaproxy:stable \
+            -c 'rm -rf /zap/wrk && ln -s "$ZAP_REPORT_DIR" /zap/wrk && exec "$@"' \
+            zap-runner "$@"
+    else
+        docker run --rm \
+            --user root \
+            --network="${NETWORK}" \
+            -v "$(pwd)/reports:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            "$@"
+    fi
 }
 
 until probe_in_network; do
@@ -57,11 +89,7 @@ else
 fi
 
 echo "--- ZAP API Scan ---"
-docker run --rm \
-    --user root \
-    --network="${NETWORK}" \
-    -v "$(pwd)/reports:/zap/wrk:rw" \
-    ghcr.io/zaproxy/zaproxy:stable \
+zap \
     zap-api-scan.py \
     -t "${TARGET_API}" \
     -f openapi \
@@ -85,11 +113,7 @@ until docker run --rm --network="${NETWORK}" curlimages/curl:8.12.1 \
 done
 echo
 
-docker run --rm \
-    --user root \
-    --network="${NETWORK}" \
-    -v "$(pwd)/reports:/zap/wrk:rw" \
-    ghcr.io/zaproxy/zaproxy:stable \
+zap \
     zap-baseline.py \
     -t "${TARGET_FRONTEND}" \
     -r "zap_frontend_report_${BUILD_ID}.html" \

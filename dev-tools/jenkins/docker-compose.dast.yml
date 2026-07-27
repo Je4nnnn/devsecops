@@ -1,0 +1,15 @@
+services:
+  frontend:
+    user: root
+    volumes: !reset []
+    command:
+      - /bin/sh
+      - -c
+      - |
+        sed -i \
+          -e '/listen 443 ssl;/d' \
+          -e '/ssl_certificate/d' \
+          -e '/ssl_protocols/d' \
+          -e '/ssl_prefer_server_ciphers/d' \
+          /etc/nginx/conf.d/default.conf
+        exec nginx -g 'daemon off;'

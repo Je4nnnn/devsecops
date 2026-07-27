@@ -353,7 +353,7 @@ PY
                     ]) {
                         sh 'docker compose -f docker-compose.yml up -d db-api api'
                         sh 'docker compose -f docker-compose.yml build --pull --no-cache frontend'
-                        sh 'docker compose -f docker-compose.yml up -d frontend'
+                        sh 'docker compose -f docker-compose.yml -f dev-tools/jenkins/docker-compose.dast.yml up -d frontend'
                         sh 'mkdir -p reports && chmod 777 reports'
                         sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
                         sh './dev-tools/jenkins/scripts/run_zap.sh "$BUILD_NUMBER"'
