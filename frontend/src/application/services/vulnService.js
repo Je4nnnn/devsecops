@@ -11,9 +11,14 @@ const buildVulnParams = (params = {}) => {
   // Filtros server-side
   if (params.connectionId != null && params.connectionId !== '') q.connection_id = params.connectionId
   if (params.agents?.length) q.agent_name = params.agents.join(',')
+  if (params.groups?.length) q.group = params.groups.join(',')
+  if (params.groupIds?.length) q.group_id = params.groupIds.join(',')
   if (params.cves?.length) q.cve_id = params.cves.join(',')
   if (params.packages?.length) q.package_name = params.packages.join(',')
   if (params.severities?.length) q.severity = params.severities.join(',')
+  if (params.osPlatforms?.length) q.os_platform = params.osPlatforms.join(',')
+  if (params.osVersions?.length) q.os_version = params.osVersions.join(',')
+  if (params.rankMin !== '' && params.rankMin != null) q.rank_min = params.rankMin
   if (params.status) q.status = params.status
   if (params.scoreMin !== '' && params.scoreMin != null) q.score_min = params.scoreMin
   if (params.scoreMax !== '' && params.scoreMax != null) q.score_max = params.scoreMax
@@ -27,16 +32,23 @@ const buildVulnParams = (params = {}) => {
 }
 
 export default {
+  buildVulnParams,
+
   // Lista paginada y filtrada en el servidor
   getVulns: async (params = {}) => {
     return apiClient.get('/vulns', { params: buildVulnParams(params) })
   },
 
-  // Opciones de filtro precalculadas (agentes, CVEs, paquetes, severidades)
+  // Opciones de filtro precalculadas (agentes, grupos, S.O., CVEs, paquetes, severidades)
   getFilterOptions: async (connectionId) => {
     const params = {}
     if (connectionId != null && connectionId !== '') params.connection_id = connectionId
     return apiClient.get('/vulns/filter-options', { params })
+  },
+
+  // Inventario de paquetes vulnerables (tabla paquetes)
+  getPackages: async (params = {}) => {
+    return apiClient.get('/vulns/packages', { params })
   },
 
   // Historial detallado de una vulnerabilidad puntual
@@ -64,8 +76,9 @@ export default {
     return apiClient.get('/vulns/evolution/summary', { params })
   },
 
-  getWeeklyTrend: async (params = {}) => {
-    return apiClient.get('/vulns/evolution/weekly', { params })
+  // Tendencia por MES (reemplaza la tendencia semanal)
+  getMonthlyTrend: async (params = {}) => {
+    return apiClient.get('/vulns/evolution/monthly', { params })
   },
 
   getTopAssets: async (params = {}) => {
@@ -90,5 +103,26 @@ export default {
   // Resumen de trazabilidad (cards)
   getTraceabilitySummary: async (params = {}) => {
     return apiClient.get('/vulns/evolution/traceability-summary', { params })
+  },
+
+  // --- Dashboard: gráficos ---
+  getStatusBreakdown: async (params = {}) => {
+    return apiClient.get('/vulns/dashboard/status-breakdown', { params })
+  },
+
+  getNewUnresolved: async (params = {}) => {
+    return apiClient.get('/vulns/dashboard/new-unresolved', { params })
+  },
+
+  getCriticalCoverage: async (params = {}) => {
+    return apiClient.get('/vulns/dashboard/critical-coverage', { params })
+  },
+
+  getCriticalHistogram: async (params = {}) => {
+    return apiClient.get('/vulns/dashboard/critical-histogram', { params })
+  },
+
+  getGroupRisk: async (params = {}) => {
+    return apiClient.get('/vulns/dashboard/group-risk', { params })
   },
 }

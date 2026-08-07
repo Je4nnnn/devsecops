@@ -9,6 +9,12 @@ from sqlalchemy.pool import StaticPool
 # sesión de la petición, para que los tests vean los datos de inmediato.
 os.environ.setdefault("SYNC_INLINE", "1")
 
+# Las pruebas no deben tocar la base real: se fija SQLite ANTES de importar la
+# app, porque app.main crea tablas y el usuario admin al importarse.
+os.environ["DATABASE_URL"] = "sqlite://"
+os.environ.setdefault("ENCRYPTION_KEY", "Zt7Qw1mFhV3nRk9YcJ2sXe5UaB8dLpG4iO6vN0tHqWc=")
+os.environ.setdefault("JWT_SECRET", "test-secret")
+
 import app.main as main
 from app.main import app
 from app.db import Base, get_db

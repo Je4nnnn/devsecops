@@ -11,6 +11,9 @@
         <span class="lg-item"><i class="dot" style="background:#d97706"></i>Media</span>
         <span class="lg-item"><i class="dot" style="background:#3b82f6"></i>Baja</span>
         <span class="lg-item"><i class="dot ongoing-dot"></i>En curso</span>
+        <span class="lg-item"><i class="dot" style="background:#16a34a"></i>Resuelta</span>
+        <span class="lg-item"><i class="dot absent-dot"></i>No existía</span>
+        <span class="lg-item"><i class="dot unknown-dot"></i>Sin datos</span>
       </div>
     </div>
 
@@ -46,6 +49,25 @@
               :key="`g-${bar.id}-${tick.ms}`"
               class="grid-line"
               :style="{ left: tick.leftPct + '%' }"
+            ></div>
+
+            <!-- Tramos previos a la detección: sin datos / no existía -->
+            <div
+              v-for="seg in contextSegments(bar)"
+              :key="`s-${bar.id}-${seg.kind}-${seg.leftPct}`"
+              class="gantt-seg"
+              :class="`seg-${seg.kind}`"
+              :style="{ left: seg.leftPct + '%', width: seg.widthPct + '%' }"
+              :title="segmentTitle(seg)"
+            ></div>
+
+            <!-- Tramo remediado: verde desde la resolución hasta el fin del rango -->
+            <div
+              v-for="seg in resolvedSegments(bar)"
+              :key="`r-${bar.id}-${seg.leftPct}`"
+              class="gantt-seg seg-resolved"
+              :style="{ left: seg.leftPct + '%', width: seg.widthPct + '%' }"
+              :title="segmentTitle(seg)"
             ></div>
 
             <button
@@ -100,6 +122,20 @@ const barTitle = bar => {
   const estado = bar.ongoing ? 'En curso (activa)' : 'Resuelta'
   return `${bar.cve_id} · ${bar.agent_name}\n${bar.package_name} v${bar.package_version}\n${estado}`
 }
+
+const SEGMENT_LABELS = {
+  unknown: 'Sin datos: no había sincronización en este periodo',
+  absent: 'La vulnerabilidad todavía no existía en el equipo',
+  resolved: 'Remediada: ya no es reportada por el agente',
+}
+
+const segmentTitle = seg => SEGMENT_LABELS[seg.kind] || ''
+
+const contextSegments = bar =>
+  (bar.segments || []).filter(seg => seg.kind === 'unknown' || seg.kind === 'absent')
+
+const resolvedSegments = bar =>
+  (bar.segments || []).filter(seg => seg.kind === 'resolved')
 </script>
 
 <style scoped>
@@ -112,6 +148,8 @@ const barTitle = bar => {
 .lg-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--text-muted); font-weight: 600; }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .ongoing-dot { background: repeating-linear-gradient(45deg, #64748b, #64748b 2px, #cbd5e1 2px, #cbd5e1 4px); }
+.absent-dot { background: #ffffff; border: 1px solid var(--border); }
+.unknown-dot { background: repeating-linear-gradient(45deg, #e2e8f0, #e2e8f0 2px, #f8fafc 2px, #f8fafc 4px); }
 
 .gantt { display: flex; flex-direction: column; }
 
@@ -143,6 +181,34 @@ const barTitle = bar => {
 .gantt-row-track { position: relative; flex: 1; min-width: 0; }
 .grid-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); opacity: 0.5; }
 
+/* Tramos de contexto (sin datos / no existía / remediada) */
+.gantt-seg {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 16px;
+  border-radius: 3px;
+  z-index: 1;
+}
+
+/* Blanco: consta que la vulnerabilidad NO existía en ese periodo */
+.seg-absent {
+  background: #ffffff;
+  border: 1px dashed var(--border);
+}
+
+/* Gris tenue: aún no había sincronizaciones, no sabemos qué pasaba */
+.seg-unknown {
+  background: repeating-linear-gradient(45deg, #e2e8f0, #e2e8f0 3px, #f8fafc 3px, #f8fafc 6px);
+  opacity: 0.7;
+}
+
+/* Verde: periodo ya remediado */
+.seg-resolved {
+  background: #16a34a;
+  opacity: 0.85;
+}
+
 .gantt-bar {
   position: absolute;
   top: 50%;
@@ -152,6 +218,7 @@ const barTitle = bar => {
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  z-index: 2;
   box-shadow: var(--shadow-sm);
   display: flex;
   align-items: center;

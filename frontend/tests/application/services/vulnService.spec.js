@@ -64,16 +64,67 @@ describe('vulnService.js', () => {
         expect(result).toEqual(mockResponse)
     })
 
-    it('getWeeklyTrend calls weekly evolution endpoint', async () => {
+    it('getMonthlyTrend calls the monthly evolution endpoint', async () => {
         const mockResponse = { data: [] }
         apiClient.get.mockResolvedValueOnce(mockResponse)
 
-        const result = await vulnService.getWeeklyTrend()
+        const result = await vulnService.getMonthlyTrend({ period: '12m' })
 
-        expect(apiClient.get).toHaveBeenCalledWith('/vulns/evolution/weekly', {
-            params: {}
+        expect(apiClient.get).toHaveBeenCalledWith('/vulns/evolution/monthly', {
+            params: { period: '12m' }
         })
         expect(result).toEqual(mockResponse)
+    })
+
+    it('maps the new filters (grupos, S.O., estado, criticidad) to query params', () => {
+        const params = vulnService.buildVulnParams({
+            connectionId: 3,
+            groups: ['default', 'web'],
+            osPlatforms: ['ubuntu'],
+            osVersions: ['22.04'],
+            status: 'resuelta',
+            rankMin: 4,
+            scoreMin: 7,
+            scoreMax: 10
+        })
+
+        expect(params).toEqual({
+            connection_id: 3,
+            group: 'default,web',
+            os_platform: 'ubuntu',
+            os_version: '22.04',
+            status: 'resuelta',
+            rank_min: 4,
+            score_min: 7,
+            score_max: 10
+        })
+    })
+
+    it('omits filters that are empty', () => {
+        expect(vulnService.buildVulnParams({ groups: [], status: '', scoreMin: '' })).toEqual({})
+    })
+
+    it('getPackages calls the package inventory endpoint', async () => {
+        const mockResponse = { data: { items: [], total: 0 } }
+        apiClient.get.mockResolvedValueOnce(mockResponse)
+
+        await vulnService.getPackages({ search: 'openssl' })
+
+        expect(apiClient.get).toHaveBeenCalledWith('/vulns/packages', {
+            params: { search: 'openssl' }
+        })
+    })
+
+    it.each([
+        ['getStatusBreakdown', '/vulns/dashboard/status-breakdown'],
+        ['getNewUnresolved', '/vulns/dashboard/new-unresolved'],
+        ['getCriticalCoverage', '/vulns/dashboard/critical-coverage'],
+        ['getCriticalHistogram', '/vulns/dashboard/critical-histogram'],
+        ['getGroupRisk', '/vulns/dashboard/group-risk']
+    ])('%s calls %s', async (method, url) => {
+        apiClient.get.mockResolvedValueOnce({ data: {} })
+        await vulnService[method]({ connection_id: 1 })
+        expect(apiClient.get).toHaveBeenCalledWith(url, { params: { connection_id: 1 } })
     })
 
     it('getTopAssets calls top assets endpoint', async () => {

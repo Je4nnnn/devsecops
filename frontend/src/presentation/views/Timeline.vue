@@ -17,10 +17,15 @@
       :agent-options="agentOpts"
       :vuln-options="vulnOpts"
       :severity-options="severityOpts"
+      :group-options="groupOpts"
+      :os-options="osOpts"
       :selected-connection="selectedConnection"
       :selected-agents="selectedAgents"
       :selected-vulns="selectedVulns"
       :selected-severities="selectedSeverities"
+      :selected-groups="selectedGroups"
+      :selected-os-platforms="selectedOsPlatforms"
+      :selected-status="selectedStatus"
       :start-date="startDate"
       :end-date="endDate"
       :loading="loading"
@@ -28,6 +33,9 @@
       @update:selected-agents="selectedAgents = $event"
       @update:selected-vulns="selectedVulns = $event"
       @update:selected-severities="selectedSeverities = $event"
+      @update:selected-groups="selectedGroups = $event"
+      @update:selected-os-platforms="selectedOsPlatforms = $event"
+      @update:selected-status="selectedStatus = $event"
       @update:start-date="startDate = $event"
       @update:end-date="endDate = $event"
       @connection-change="onConnectionChange"
@@ -78,16 +86,21 @@ const connections = ref([])
 const agentOpts = ref([])
 const vulnOpts = ref([])
 const severityOpts = ref([])
+const groupOpts = ref([])
+const osOpts = ref([])
 const selectedConnection = ref('')
 const selectedAgents = ref([])
 const selectedVulns = ref([])
 const selectedSeverities = ref([])
+const selectedGroups = ref([])
+const selectedOsPlatforms = ref([])
+const selectedStatus = ref('')
 const errorBanner = ref('')
 
-// Fecha de inicio por defecto: hace 30 días.
+// Fecha de inicio por defecto: hace un mes (el periodo de trabajo es mensual).
 const defaultStart = () => {
   const d = new Date()
-  d.setDate(d.getDate() - 30)
+  d.setMonth(d.getMonth() - 1)
   return d.toISOString().split('T')[0]
 }
 const startDate = ref(defaultStart())
@@ -112,6 +125,9 @@ const {
   selectedAgents,
   selectedVulns,
   selectedSeverities,
+  selectedGroups,
+  selectedOsPlatforms,
+  selectedStatus,
   startDate,
   endDate,
 })
@@ -120,9 +136,14 @@ const onConnectionChange = async () => {
   selectedAgents.value = []
   selectedVulns.value = []
   selectedSeverities.value = []
+  selectedGroups.value = []
+  selectedOsPlatforms.value = []
+  selectedStatus.value = ''
   agentOpts.value = []
   vulnOpts.value = []
   severityOpts.value = []
+  groupOpts.value = []
+  osOpts.value = []
   errorBanner.value = ''
 
   if (!selectedConnection.value) return
@@ -132,9 +153,11 @@ const onConnectionChange = async () => {
     agentOpts.value = res.data?.agents || []
     vulnOpts.value = res.data?.cves || []
     severityOpts.value = res.data?.severities || []
+    groupOpts.value = res.data?.groups || []
+    osOpts.value = res.data?.operating_systems || []
   } catch (error) {
     console.error(error)
-    errorBanner.value = 'No se pudieron cargar agentes y CVEs para la conexion seleccionada.'
+    errorBanner.value = 'No se pudieron cargar los filtros para la conexion seleccionada.'
   }
 }
 

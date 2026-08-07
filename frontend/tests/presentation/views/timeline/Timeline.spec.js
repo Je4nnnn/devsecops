@@ -155,7 +155,7 @@ describe('Timeline.vue', () => {
     await wrapper.vm.onConnectionChange()
     await flushPromises()
 
-    expect(wrapper.vm.errorBanner).toContain('No se pudieron cargar agentes y CVEs')
+    expect(wrapper.vm.errorBanner).toContain('No se pudieron cargar los filtros')
   })
 
   it('updates state when filters emit updates', async () => {

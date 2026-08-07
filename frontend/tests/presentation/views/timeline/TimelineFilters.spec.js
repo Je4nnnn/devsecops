@@ -10,10 +10,19 @@ const defaultProps = {
   agentOptions: ['Agent 1', 'Agent 2', 'Agent 3'],
   vulnOptions: ['CVE-2023-001', 'CVE-2023-002'],
   severityOptions: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
+  groupOptions: [{ name: 'default' }, { name: 'web' }, { name: 'db' }],
+  osOptions: [
+    { platform: 'ubuntu', version: '22.04' },
+    { platform: 'ubuntu', version: '20.04' },
+    { platform: 'windows', version: '2019' }
+  ],
   selectedConnection: '',
   selectedAgents: [],
   selectedVulns: [],
   selectedSeverities: [],
+  selectedGroups: [],
+  selectedOsPlatforms: [],
+  selectedStatus: '',
   startDate: '2026-03-01',
   endDate: '2026-03-31',
   loading: false
@@ -75,7 +84,7 @@ describe('TimelineFilters.vue', () => {
 
   it('filters vulnerabilities by search query', async () => {
     const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
-    await wrapper.findAll('.dd-btn')[1].trigger('click')
+    await wrapper.findAll('.dd-btn')[3].trigger('click')
     const searchInput = wrapper.find('.dd-search')
     await searchInput.setValue('CVE-2023-002')
     expect(wrapper.vm.filteredVulns).toEqual(['CVE-2023-002'])
@@ -83,12 +92,39 @@ describe('TimelineFilters.vue', () => {
 
   it('selects all severities when "Todas" is clicked', async () => {
     const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
-    // dd-btn index 2 = criticidad (0 agentes, 1 vulns, 2 criticidad)
-    await wrapper.findAll('.dd-btn')[2].trigger('click')
+    // dd-btn: 0 agentes · 1 grupos · 2 S.O. · 3 CVEs · 4 criticidad
+    await wrapper.findAll('.dd-btn')[4].trigger('click')
     await wrapper.vm.$nextTick()
     const todas = wrapper.find('.dd-actions').findAll('span')[0]
     await todas.trigger('click')
     expect(wrapper.emitted('update:selectedSeverities')[0][0]).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
+  })
+
+  it('selects all groups when "Todos" is clicked', async () => {
+    const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
+    await wrapper.findAll('.dd-btn')[1].trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.dd-actions').findAll('span')[0].trigger('click')
+    expect(wrapper.emitted('update:selectedGroups')[0][0]).toEqual(['default', 'web', 'db'])
+  })
+
+  it('filters groups by search query', async () => {
+    const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
+    await wrapper.findAll('.dd-btn')[1].trigger('click')
+    await wrapper.find('.dd-search').setValue('we')
+    expect(wrapper.vm.filteredGroups.map(g => g.name)).toEqual(['web'])
+  })
+
+  it('deduplicates operating system platforms', async () => {
+    const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
+    expect(wrapper.vm.osPlatformOptions).toEqual(['ubuntu', 'windows'])
+  })
+
+  it('emits update:selectedStatus from the status selector', async () => {
+    const wrapper = mount(TimelineFilters, { props: { ...defaultProps, selectedConnection: '1' } })
+    const statusSelect = wrapper.findAll('select')[1]
+    await statusSelect.setValue('resuelta')
+    expect(wrapper.emitted('update:selectedStatus')[0]).toEqual(['resuelta'])
   })
 
   it('emits build event when button is clicked', async () => {

@@ -81,28 +81,103 @@
       </div>
     </div>
 
+    <!-- Gráficos de torta -->
+    <div class="chart-grid">
+      <section class="card chart-card">
+        <div class="panel-head">
+          <h2>Resueltas vs. activas</h2>
+          <span>Estado actual</span>
+        </div>
+        <DonutChart
+          :segments="statusSegments"
+          :center-value="statusBreakdown?.total ?? 0"
+          center-label="Amenazas"
+          aria-label="Distribución de vulnerabilidades resueltas y activas"
+        />
+      </section>
+
+      <section class="card chart-card">
+        <div class="panel-head">
+          <h2>Nuevas de {{ selectedYear }}</h2>
+          <select v-model.number="selectedYear" class="mini-select" @change="fetchDashboardCharts">
+            <option v-for="y in yearOptions" :key="y" :value="y">{{ y }}</option>
+          </select>
+        </div>
+        <DonutChart
+          :segments="newUnresolvedSegments"
+          :center-value="`${newUnresolved?.pct_sin_corregir ?? 0}%`"
+          center-label="Sin corregir"
+          aria-label="Porcentaje de vulnerabilidades nuevas del año sin corregir"
+        />
+      </section>
+
+      <section class="card chart-card">
+        <div class="panel-head">
+          <h2>Alcance crítico</h2>
+          <span>Al menos 1 crítica</span>
+        </div>
+        <div class="coverage-pair">
+          <DonutChart
+            :segments="criticalAgentSegments"
+            :center-value="`${criticalCoverage?.pct_agentes ?? 0}%`"
+            center-label="Agentes"
+            aria-label="Porcentaje de agentes con vulnerabilidades críticas"
+          />
+          <DonutChart
+            :segments="criticalGroupSegments"
+            :center-value="`${criticalCoverage?.pct_grupos ?? 0}%`"
+            center-label="Grupos"
+            aria-label="Porcentaje de grupos con vulnerabilidades críticas"
+          />
+        </div>
+      </section>
+    </div>
+
+    <!-- Histograma + tendencia mensual -->
     <div class="evolution-panels">
       <section class="card evolution-card">
         <div class="panel-head">
-          <h2>Tendencia semanal</h2>
-          <span>Detected</span>
+          <h2>Agentes con vulnerabilidades críticas</h2>
+          <span>Histograma</span>
         </div>
-        <div v-if="weeklyTrend.length" class="weekly-bars">
-          <div v-for="point in weeklyTrend" :key="point.semana" class="bar-row">
-            <span>{{ formatWeek(point.semana) }}</span>
+        <HistogramChart :items="criticalHistogramBars" empty-text="Ningún agente reporta vulnerabilidades críticas." />
+      </section>
+
+      <section class="card evolution-card">
+        <div class="panel-head">
+          <h2>Tendencia mensual</h2>
+          <span>{{ trendPeriodLabel }}</span>
+        </div>
+        <div v-if="monthlyTrend.length" class="weekly-bars">
+          <div v-for="point in monthlyTrend" :key="point.mes" class="bar-row">
+            <span>{{ formatMonth(point.mes) }}</span>
             <div class="bar-track">
-              <div class="bar-fill" :style="{ width: getWeeklyBarWidth(point.total_vulnerabilidades) + '%' }"></div>
+              <div class="bar-fill" :style="{ width: getMonthlyBarWidth(point.total_vulnerabilidades) + '%' }"></div>
             </div>
             <strong>{{ point.total_vulnerabilidades }}</strong>
           </div>
         </div>
         <p v-else class="panel-empty">Sin eventos históricos suficientes.</p>
       </section>
+    </div>
+
+    <div class="evolution-panels">
+      <section class="card evolution-card">
+        <div class="panel-head">
+          <h2>Riesgo por grupo</h2>
+          <span>Críticas activas</span>
+        </div>
+        <HistogramChart
+          :items="groupRiskBars"
+          default-color="#ea580c"
+          empty-text="Sin grupos de agentes sincronizados."
+        />
+      </section>
 
       <section class="card evolution-card">
         <div class="panel-head">
           <h2>Top servidores</h2>
-          <span>Últimos 7 días</span>
+          <span>CVEs activos</span>
         </div>
         <div v-if="topAssets.length" class="top-assets-list">
           <div v-for="asset in topAssets" :key="asset.hostname" class="asset-row">
@@ -161,6 +236,56 @@
               </label>
             </div>
           </div>
+        </div>
+
+        <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.groups = false)">
+          <label>Grupos</label>
+          <button class="filter-input dd-btn" @click="dropdowns.groups = !dropdowns.groups" :disabled="!groupOptions.length">
+            <span>{{ selectedGroups.length ? selectedGroups.length + ' sel.' : 'Todos' }}</span>
+            <span>▼</span>
+          </button>
+          <div v-if="dropdowns.groups" class="dd-panel fade-in">
+            <input type="text" v-model="search.group" placeholder="Buscar grupo..." class="dd-search">
+            <div class="dd-actions">
+              <span @click="selectedGroups = groupOptions.map(g => g.name)">Todos</span>
+              <span @click="selectedGroups = []">Limpiar</span>
+            </div>
+            <div class="dd-list custom-scroll">
+              <label v-for="grp in filteredGroups" :key="grp.name" class="dd-item">
+                <input type="checkbox" :value="grp.name" v-model="selectedGroups">
+                <span class="dd-item-main">{{ grp.name }}</span>
+                <span v-if="grp.assets != null" class="dd-item-meta">{{ grp.assets }} ag.</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.os = false)">
+          <label>Sistema Operativo</label>
+          <button class="filter-input dd-btn" @click="dropdowns.os = !dropdowns.os" :disabled="!osOptions.length">
+            <span>{{ selectedOsPlatforms.length ? selectedOsPlatforms.length + ' sel.' : 'Todos' }}</span>
+            <span>▼</span>
+          </button>
+          <div v-if="dropdowns.os" class="dd-panel fade-in">
+            <div class="dd-actions">
+              <span @click="selectedOsPlatforms = [...osPlatformOptions]">Todos</span>
+              <span @click="selectedOsPlatforms = []">Limpiar</span>
+            </div>
+            <div class="dd-list custom-scroll">
+              <label v-for="platform in osPlatformOptions" :key="platform" class="dd-item">
+                <input type="checkbox" :value="platform" v-model="selectedOsPlatforms"> {{ platform }}
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="f-group">
+          <label>Estado</label>
+          <select v-model="selectedStatus" class="filter-input">
+            <option value="">Todas</option>
+            <option value="no_resuelta">No resueltas</option>
+            <option value="resuelta">Resueltas</option>
+          </select>
         </div>
 
         <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.vulns = false)">
@@ -378,19 +503,21 @@
                     </div>
                   </div>
 
-                  <!-- Línea Conectora -->
-                  <div class="timeline-track">
+                  <!-- Línea Conectora: verde cuando la amenaza ya fue resuelta -->
+                  <div class="timeline-track" :class="{ resolved: isResolved(vuln) }">
                     <div class="track-progress" :style="{ width: getTimelineProgress(vuln) + '%' }"></div>
                   </div>
 
-                  <!-- Punto de Última Vista -->
-                  <div class="timeline-point end">
-                    <div class="point-marker" :class="{ 'pulse-radar': isRecentlySeen(vuln.last_seen) }">
+                  <!-- Punto de cierre / última vista -->
+                  <div class="timeline-point end" :class="{ resolved: isResolved(vuln) }">
+                    <div class="point-marker" :class="{ 'pulse-radar': !isResolved(vuln) && isRecentlySeen(vuln.last_seen) }">
                       <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
                     </div>
                     <div class="point-content">
-                      <span class="point-title">Última actividad</span>
-                      <span class="point-time" :title="formatDate(vuln.last_seen)">{{ timeAgo(vuln.last_seen) }}</span>
+                      <span class="point-title">{{ isResolved(vuln) ? 'Resuelta' : 'Última actividad' }}</span>
+                      <span class="point-time" :title="formatDate(vuln.resolved_at || vuln.last_seen)">
+                        {{ timeAgo(vuln.resolved_at || vuln.last_seen) }}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -447,6 +574,8 @@ import { ref, onMounted, computed, watch, reactive } from 'vue'
 import vulnService from '../../application/services/vulnService'
 import wazuhService from '../../application/services/wazuhService'
 import { useSyncJob } from '../composables/useSyncJob'
+import DonutChart from '../components/charts/DonutChart.vue'
+import HistogramChart from '../components/charts/HistogramChart.vue'
 
 const vulns = ref([])          // Solo la página actual (server-side)
 const totalItems = ref(0)
@@ -454,11 +583,23 @@ const loading = ref(true)
 const error = ref('')
 const evolutionSummary = ref(null)
 const traceability = ref(null)
-const weeklyTrend = ref([])
+const monthlyTrend = ref([])
 const topAssets = ref([])
 const sortKey = ref('last_seen')
 const sortOrder = ref('desc')
 const showFilters = ref(false)
+
+// Datos de los gráficos del dashboard
+const statusBreakdown = ref(null)
+const newUnresolved = ref(null)
+const criticalCoverage = ref(null)
+const criticalHistogram = ref([])
+const groupRisk = ref([])
+
+const currentYear = new Date().getFullYear()
+const selectedYear = ref(currentYear)
+const yearOptions = computed(() => [0, 1, 2, 3].map(offset => currentYear - offset))
+const trendPeriodLabel = 'Últimos 12 meses'
 
 // Sincronización en segundo plano + progreso + toast
 const { isSyncing, progressPct, phaseLabel, startSync, resumeIfActive, onDone } = useSyncJob()
@@ -474,18 +615,36 @@ const agentOptions = ref([])
 const vulnOptions = ref([])
 const packageOptions = ref([])
 const severityOptions = ref([])
+const groupOptions = ref([])
+const osOptions = ref([])
 
 const selectedConnection = ref('')
 const selectedAgents = ref([])
 const selectedVulns = ref([])
 const selectedPackages = ref([])
 const selectedSeverities = ref([])
+const selectedGroups = ref([])
+const selectedOsPlatforms = ref([])
+const selectedStatus = ref('')
 const scoreMin = ref('')
 const scoreMax = ref('')
 
 // Dropdown state
-const search = reactive({ agent: '', vuln: '', package: '' })
-const dropdowns = reactive({ agents: false, vulns: false, packages: false, severity: false })
+const search = reactive({ agent: '', vuln: '', package: '', group: '' })
+const dropdowns = reactive({
+  agents: false, vulns: false, packages: false, severity: false,
+  groups: false, os: false,
+})
+
+const osPlatformOptions = computed(() =>
+  [...new Set(osOptions.value.map(os => os.platform).filter(Boolean))].sort()
+)
+
+const filteredGroups = computed(() =>
+  groupOptions.value.filter(grp =>
+    (grp.name || '').toLowerCase().includes(search.group.toLowerCase())
+  )
+)
 
 // Filtered lists for search (búsqueda dentro del dropdown, sobre opciones precargadas)
 const filteredAgents = computed(() =>
@@ -500,8 +659,55 @@ const filteredPackages = computed(() =>
   packageOptions.value.filter(pkg => pkg.toLowerCase().includes(search.package.toLowerCase()))
 )
 
-const maxWeeklyTotal = computed(() =>
-  weeklyTrend.value.reduce((max, point) => Math.max(max, point.total_vulnerabilidades || 0), 0)
+const maxMonthlyTotal = computed(() =>
+  monthlyTrend.value.reduce((max, point) => Math.max(max, point.total_vulnerabilidades || 0), 0)
+)
+
+// === SEGMENTOS DE LOS GRÁFICOS ===
+const statusSegments = computed(() => [
+  { label: 'Activas', value: statusBreakdown.value?.activas ?? 0, color: '#dc2626' },
+  { label: 'Resueltas', value: statusBreakdown.value?.resueltas ?? 0, color: '#16a34a' },
+])
+
+const newUnresolvedSegments = computed(() => [
+  { label: 'Sin corregir', value: newUnresolved.value?.sin_corregir ?? 0, color: '#d97706' },
+  { label: 'Corregidas', value: newUnresolved.value?.corregidas ?? 0, color: '#16a34a' },
+])
+
+const criticalAgentSegments = computed(() => {
+  const total = criticalCoverage.value?.total_agentes ?? 0
+  const criticos = criticalCoverage.value?.agentes_criticos ?? 0
+  return [
+    { label: 'Con críticas', value: criticos, color: '#dc2626' },
+    { label: 'Sin críticas', value: Math.max(0, total - criticos), color: '#16a34a' },
+  ]
+})
+
+const criticalGroupSegments = computed(() => {
+  const total = criticalCoverage.value?.total_grupos ?? 0
+  const criticos = criticalCoverage.value?.grupos_criticos ?? 0
+  return [
+    { label: 'Con críticas', value: criticos, color: '#ea580c' },
+    { label: 'Sin críticas', value: Math.max(0, total - criticos), color: '#16a34a' },
+  ]
+})
+
+const criticalHistogramBars = computed(() =>
+  criticalHistogram.value.map(row => ({
+    key: row.asset_id ?? row.hostname,
+    label: row.hostname,
+    value: row.criticas,
+    tooltip: row.grupos ? `${row.hostname} · ${row.grupos}` : row.hostname,
+  }))
+)
+
+const groupRiskBars = computed(() =>
+  groupRisk.value.map(row => ({
+    key: row.group_id ?? row.name,
+    label: row.name,
+    value: row.criticas,
+    tooltip: `${row.name}: ${row.agentes_criticos}/${row.agentes} agentes con críticas`,
+  }))
 )
 
 const getSeverityLevel = (s) => {
@@ -557,9 +763,12 @@ const buildParams = () => ({
   pageSize: itemsPerPage,
   connectionId: selectedConnection.value || null,
   agents: selectedAgents.value,
+  groups: selectedGroups.value,
   cves: selectedVulns.value,
   packages: selectedPackages.value,
   severities: selectedSeverities.value,
+  osPlatforms: selectedOsPlatforms.value,
+  status: selectedStatus.value || null,
   scoreMin: scoreMin.value,
   scoreMax: scoreMax.value,
   sortBy: sortKey.value || 'last_seen',
@@ -598,7 +807,8 @@ watch([sortKey, sortOrder], () => { currentPage.value = 1; fetchVulns() })
 
 // Recargar (con debounce) al cambiar filtros
 watch(
-  [selectedAgents, selectedVulns, selectedPackages, selectedSeverities, scoreMin, scoreMax],
+  [selectedAgents, selectedVulns, selectedPackages, selectedSeverities,
+   selectedGroups, selectedOsPlatforms, selectedStatus, scoreMin, scoreMax],
   refetchFromFilters,
   { deep: true }
 )
@@ -622,6 +832,8 @@ const fetchFilterOptions = async () => {
     agentOptions.value = data.agents || []
     vulnOptions.value = data.cves || []
     packageOptions.value = data.packages || []
+    groupOptions.value = data.groups || []
+    osOptions.value = data.operating_systems || []
     severityOptions.value = (data.severities || []).sort(
       (a, b) => getSeverityLevel(b.toLowerCase()) - getSeverityLevel(a.toLowerCase())
     )
@@ -630,28 +842,30 @@ const fetchFilterOptions = async () => {
   }
 }
 
-const onConnectionChange = () => {
+const resetFilterSelections = () => {
   selectedAgents.value = []
   selectedVulns.value = []
   selectedPackages.value = []
   selectedSeverities.value = []
+  selectedGroups.value = []
+  selectedOsPlatforms.value = []
+  selectedStatus.value = ''
   scoreMin.value = ''
   scoreMax.value = ''
   currentPage.value = 1
+}
+
+const onConnectionChange = () => {
+  resetFilterSelections()
   fetchFilterOptions()
   fetchVulns()
   fetchEvolution()
+  fetchDashboardCharts()
 }
 
 const clearFilters = () => {
   selectedConnection.value = ''
-  selectedAgents.value = []
-  selectedVulns.value = []
-  selectedPackages.value = []
-  selectedSeverities.value = []
-  scoreMin.value = ''
-  scoreMax.value = ''
-  currentPage.value = 1
+  resetFilterSelections()
   fetchFilterOptions()
   fetchVulns()
 }
@@ -673,19 +887,40 @@ const evolutionParams = () => {
 const fetchEvolution = async () => {
   try {
     const params = evolutionParams()
-    const [summaryRes, weeklyRes, topRes, traceRes] = await Promise.all([
+    const [summaryRes, monthlyRes, topRes, traceRes] = await Promise.all([
       vulnService.getEvolutionSummary(params),
-      vulnService.getWeeklyTrend(params),
-      vulnService.getTopAssets({ ...params, days: 7, limit: 5 }),
+      vulnService.getMonthlyTrend({ ...params, period: '12m' }),
+      vulnService.getTopAssets({ ...params, limit: 5 }),
       vulnService.getTraceabilitySummary(params),
     ])
 
     evolutionSummary.value = summaryRes?.data || null
-    weeklyTrend.value = Array.isArray(weeklyRes?.data) ? weeklyRes.data : []
+    monthlyTrend.value = Array.isArray(monthlyRes?.data) ? monthlyRes.data : []
     topAssets.value = Array.isArray(topRes?.data) ? topRes.data : []
     traceability.value = traceRes?.data || null
   } catch (err) {
     console.error('Error fetching evolution metrics:', err)
+  }
+}
+
+const fetchDashboardCharts = async () => {
+  try {
+    const params = evolutionParams()
+    const [statusRes, newRes, coverageRes, histogramRes, groupRes] = await Promise.all([
+      vulnService.getStatusBreakdown(params),
+      vulnService.getNewUnresolved({ ...params, year: selectedYear.value }),
+      vulnService.getCriticalCoverage(params),
+      vulnService.getCriticalHistogram({ ...params, limit: 15 }),
+      vulnService.getGroupRisk({ ...params, limit: 10 }),
+    ])
+
+    statusBreakdown.value = statusRes?.data || null
+    newUnresolved.value = newRes?.data || null
+    criticalCoverage.value = coverageRes?.data || null
+    criticalHistogram.value = Array.isArray(histogramRes?.data) ? histogramRes.data : []
+    groupRisk.value = Array.isArray(groupRes?.data) ? groupRes.data : []
+  } catch (err) {
+    console.error('Error fetching dashboard charts:', err)
   }
 }
 
@@ -702,15 +937,15 @@ const formatDate = (dateString) => {
   })
 }
 
-const formatWeek = (dateString) => {
+const formatMonth = (dateString) => {
   if (!dateString) return '-'
   const d = new Date(dateString)
-  return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+  return d.toLocaleDateString('es-ES', { month: 'short', year: '2-digit' })
 }
 
-const getWeeklyBarWidth = (value) => {
-  if (!maxWeeklyTotal.value) return 0
-  return Math.max(8, Math.round((value / maxWeeklyTotal.value) * 100))
+const getMonthlyBarWidth = (value) => {
+  if (!maxMonthlyTotal.value) return 0
+  return Math.max(8, Math.round((value / maxMonthlyTotal.value) * 100))
 }
 
 const isNew = (firstSeenDate) => {
@@ -737,6 +972,8 @@ const getSeverityBadgeClass = (severity) => {
   if (['medium', 'media'].includes(s)) return 'badge-medium'
   return 'badge-low'
 }
+
+const isResolved = (vuln) => vuln?.status === 'RESOLVED'
 
 const isRecentlySeen = (lastSeenDate) => {
   if (!lastSeenDate) return false
@@ -788,6 +1025,7 @@ onMounted(() => {
   fetchFilterOptions()
   fetchVulns()
   fetchEvolution()
+  fetchDashboardCharts()
 
   // Reanuda la barra de progreso si ya había una sync en curso
   resumeIfActive()
@@ -797,6 +1035,7 @@ onMounted(() => {
     fetchFilterOptions()
     fetchVulns()
     fetchEvolution()
+    fetchDashboardCharts()
   })
 })
 </script>
@@ -879,6 +1118,57 @@ onMounted(() => {
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+/* Rejilla de gráficos de torta */
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.chart-card {
+  min-height: 210px;
+}
+
+.coverage-pair {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.coverage-pair :deep(.donut-chart) {
+  flex: 1 1 140px;
+  gap: 0.6rem;
+}
+
+.coverage-pair :deep(.donut-svg) {
+  width: 108px;
+  height: 108px;
+}
+
+.mini-select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bg-dark);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dd-item-main {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dd-item-meta {
+  color: var(--text-muted);
+  font-size: 0.7rem;
 }
 
 .evolution-card {
@@ -1002,6 +1292,21 @@ onMounted(() => {
   background-color: rgba(59, 130, 246, 0.1);
   color: #3b82f6;
   border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+/* Amenaza resuelta: el tramo cerrado se marca en verde */
+.end.resolved .point-marker {
+  background-color: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.28);
+}
+
+.timeline-track.resolved {
+  background-color: rgba(22, 163, 74, 0.18);
+}
+
+.timeline-track.resolved .track-progress {
+  background-color: #16a34a;
 }
 
 .point-content {

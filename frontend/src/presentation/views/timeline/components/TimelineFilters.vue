@@ -29,6 +29,54 @@
         </div>
       </div>
 
+      <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.groups = false)">
+        <label>Grupos</label>
+        <button class="filter-input dd-btn" @click="dropdowns.groups = !dropdowns.groups">
+          <span>{{ selectedGroupsModel.length ? selectedGroupsModel.length + ' sel.' : 'Todos' }}</span>
+          <span>▼</span>
+        </button>
+        <div v-if="dropdowns.groups" class="dd-panel fade-in">
+          <input type="text" v-model="search.group" placeholder="Buscar grupo..." class="dd-search">
+          <div class="dd-actions">
+            <span @click="selectedGroupsModel = groupOptions.map(g => g.name)">Todos</span>
+            <span @click="selectedGroupsModel = []">Limpiar</span>
+          </div>
+          <div class="dd-list custom-scroll">
+            <label v-for="grp in filteredGroups" :key="grp.name" class="dd-item">
+              <input type="checkbox" :value="grp.name" v-model="selectedGroupsModel"> {{ grp.name }}
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.os = false)">
+        <label>S.O.</label>
+        <button class="filter-input dd-btn" @click="dropdowns.os = !dropdowns.os">
+          <span>{{ selectedOsModel.length ? selectedOsModel.length + ' sel.' : 'Todos' }}</span>
+          <span>▼</span>
+        </button>
+        <div v-if="dropdowns.os" class="dd-panel fade-in">
+          <div class="dd-actions">
+            <span @click="selectedOsModel = [...osPlatformOptions]">Todos</span>
+            <span @click="selectedOsModel = []">Limpiar</span>
+          </div>
+          <div class="dd-list custom-scroll">
+            <label v-for="platform in osPlatformOptions" :key="platform" class="dd-item">
+              <input type="checkbox" :value="platform" v-model="selectedOsModel"> {{ platform }}
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="f-group">
+        <label>Estado</label>
+        <select v-model="selectedStatusModel" class="filter-input">
+          <option value="">Todas</option>
+          <option value="no_resuelta">No resueltas</option>
+          <option value="resuelta">Resueltas</option>
+        </select>
+      </div>
+
       <div class="f-group popover-wrap" v-click-outside="() => (dropdowns.vulns = false)">
         <label>Vulnerabilidad</label>
         <button class="filter-input dd-btn" @click="dropdowns.vulns = !dropdowns.vulns">
@@ -97,10 +145,15 @@ const props = defineProps({
   agentOptions: { type: Array, required: true },
   vulnOptions: { type: Array, required: true },
   severityOptions: { type: Array, default: () => [] },
+  groupOptions: { type: Array, default: () => [] },
+  osOptions: { type: Array, default: () => [] },
   selectedConnection: { type: [String, Number], default: '' },
   selectedAgents: { type: Array, required: true },
   selectedVulns: { type: Array, required: true },
   selectedSeverities: { type: Array, default: () => [] },
+  selectedGroups: { type: Array, default: () => [] },
+  selectedOsPlatforms: { type: Array, default: () => [] },
+  selectedStatus: { type: String, default: '' },
   startDate: { type: String, required: true },
   endDate: { type: String, required: true },
   loading: { type: Boolean, default: false }
@@ -111,6 +164,9 @@ const emit = defineEmits([
   'update:selectedAgents',
   'update:selectedVulns',
   'update:selectedSeverities',
+  'update:selectedGroups',
+  'update:selectedOsPlatforms',
+  'update:selectedStatus',
   'update:startDate',
   'update:endDate',
   'connection-change',
@@ -149,8 +205,25 @@ const selectedSeveritiesModel = computed({
   set: value => emit('update:selectedSeverities', value)
 })
 
-const search = reactive({ agent: '', vuln: '' })
-const dropdowns = reactive({ agents: false, vulns: false, severity: false })
+const selectedGroupsModel = computed({
+  get: () => props.selectedGroups,
+  set: value => emit('update:selectedGroups', value)
+})
+
+const selectedOsModel = computed({
+  get: () => props.selectedOsPlatforms,
+  set: value => emit('update:selectedOsPlatforms', value)
+})
+
+const selectedStatusModel = computed({
+  get: () => props.selectedStatus,
+  set: value => emit('update:selectedStatus', value)
+})
+
+const search = reactive({ agent: '', vuln: '', group: '' })
+const dropdowns = reactive({
+  agents: false, vulns: false, severity: false, groups: false, os: false
+})
 
 const filteredAgents = computed(() =>
   props.agentOptions.filter(agent => agent.toLowerCase().includes(search.agent.toLowerCase()))
@@ -159,11 +232,21 @@ const filteredAgents = computed(() =>
 const filteredVulns = computed(() =>
   props.vulnOptions.filter(vuln => vuln.toLowerCase().includes(search.vuln.toLowerCase()))
 )
+
+const filteredGroups = computed(() =>
+  props.groupOptions.filter(grp =>
+    (grp.name || '').toLowerCase().includes(search.group.toLowerCase())
+  )
+)
+
+const osPlatformOptions = computed(() =>
+  [...new Set(props.osOptions.map(os => os.platform).filter(Boolean))].sort()
+)
 </script>
 
 <style scoped>
 .filter-panel { padding: 0; margin-bottom: 1.5rem; overflow: visible; }
-.filter-row { display: grid; grid-template-columns: 1.1fr 0.9fr 0.9fr 0.85fr 0.75fr 0.65fr auto; align-items: stretch; }
+.filter-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); align-items: stretch; }
 .f-group { display: flex; flex-direction: column; padding: 1rem 1.2rem; border-right: 1px solid var(--border); }
 .f-group:last-child { border-right: none; }
 .f-group label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.5rem; }
