@@ -86,10 +86,8 @@ export default function useTimelineData({
   }
 
   const buildParams = () => {
-    const params = {
-      connection_id: selectedConnection.value,
-      limit: MAX_THREATS,
-    }
+    const params = { limit: MAX_THREATS }
+    if (selectedConnection.value) params.connection_id = selectedConnection.value
     const isoStart = toIsoStart(startDate.value)
     if (isoStart) params.start = isoStart
     const isoEnd = toIsoEnd(endDate?.value)
@@ -106,8 +104,6 @@ export default function useTimelineData({
   }
 
   const build = async () => {
-    if (!selectedConnection.value) return
-
     loading.value = true
     hasBuilt.value = false
     errorMessage.value = ''

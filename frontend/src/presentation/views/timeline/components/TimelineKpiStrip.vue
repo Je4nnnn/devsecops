@@ -1,7 +1,7 @@
 <template>
   <div class="kpi-strip" v-if="hasBuilt">
     <div class="kpi-card">
-      <span class="kpi-label">Amenazas (distintas)</span>
+      <span class="kpi-label">Amenazas Totales</span>
       <span class="kpi-val">{{ counts.total }}</span>
     </div>
     <div class="kpi-card kpi-danger">

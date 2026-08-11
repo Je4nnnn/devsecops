@@ -4,7 +4,7 @@
       <div class="f-group">
         <label>Conexion Wazuh</label>
         <select v-model="connectionModel" @change="emit('connection-change')" class="filter-input">
-          <option value="" disabled>Selecciona servidor...</option>
+          <option value="">Todos los servidores</option>
           <option v-for="conn in connections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
         </select>
       </div>
@@ -119,16 +119,16 @@
 
       <div class="f-group">
         <label>Desde</label>
-        <input type="date" v-model="startDateModel" :max="endDate || today" class="filter-input">
+        <input type="month" v-model="startMonthModel" class="filter-input">
       </div>
 
       <div class="f-group">
         <label>Hasta</label>
-        <input type="date" v-model="endDateModel" :min="startDate" :max="today" class="filter-input">
+        <input type="month" v-model="endMonthModel" :min="startMonthModel" class="filter-input">
       </div>
 
       <div class="f-group f-action">
-        <button class="btn btn-primary" @click="emit('build')" :disabled="!selectedConnection || loading">
+        <button class="btn btn-primary" @click="emit('build')" :disabled="loading">
           {{ loading ? 'Analizando...' : 'Generar Vista' }}
         </button>
       </div>
@@ -173,8 +173,6 @@ const emit = defineEmits([
   'build'
 ])
 
-const today = new Date().toISOString().split('T')[0]
-
 const connectionModel = computed({
   get: () => props.selectedConnection,
   set: value => emit('update:selectedConnection', value)
@@ -190,14 +188,21 @@ const selectedVulnsModel = computed({
   set: value => emit('update:selectedVulns', value)
 })
 
-const startDateModel = computed({
-  get: () => props.startDate,
-  set: value => emit('update:startDate', value)
+// Desde = primer día del mes elegido.
+const startMonthModel = computed({
+  get: () => (props.startDate || '').slice(0, 7),
+  set: value => emit('update:startDate', value ? `${value}-01` : '')
 })
 
-const endDateModel = computed({
-  get: () => props.endDate,
-  set: value => emit('update:endDate', value)
+// Hasta = último día del mes elegido.
+const endMonthModel = computed({
+  get: () => (props.endDate || '').slice(0, 7),
+  set: value => {
+    if (!value) return emit('update:endDate', '')
+    const [y, m] = value.split('-').map(Number)
+    const lastDay = new Date(y, m, 0).getDate()
+    emit('update:endDate', `${value}-${String(lastDay).padStart(2, '0')}`)
+  }
 })
 
 const selectedSeveritiesModel = computed({

@@ -146,8 +146,6 @@ const onConnectionChange = async () => {
   osOpts.value = []
   errorBanner.value = ''
 
-  if (!selectedConnection.value) return
-
   try {
     const res = await vulnService.getFilterOptions(selectedConnection.value)
     agentOpts.value = res.data?.agents || []

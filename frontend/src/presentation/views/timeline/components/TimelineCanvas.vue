@@ -4,6 +4,9 @@
       <div class="tl-toolbar-left">
         <span class="tl-year">{{ rangeLabel }}</span>
         <span class="tl-info">{{ bars.length }} amenazas</span>
+        <span v-if="isFuture" class="tl-note" title="No hay datos posteriores a hoy; la barra se prolonga con el último estado conocido.">
+          ⓘ Tiempos futuros: se asume el último estado detectado
+        </span>
       </div>
       <div class="tl-legend">
         <span class="lg-item"><i class="dot" style="background:#dc2626"></i>Crítica</span>
@@ -18,23 +21,24 @@
     </div>
 
     <div class="gantt">
-      <!-- Eje de fechas -->
-      <div class="gantt-axis">
-        <div class="gantt-axis-label-col"></div>
-        <div class="gantt-axis-track">
-          <div
-            v-for="tick in ticks"
-            :key="tick.ms"
-            class="axis-tick"
-            :style="{ left: tick.leftPct + '%' }"
-          >
-            <span class="axis-tick-label">{{ tick.label }}</span>
+      <!-- Filas (una barra por amenaza). El eje va dentro para compartir el
+           mismo ancho que las filas cuando aparece el scrollbar. -->
+      <div class="gantt-body custom-scroll">
+        <!-- Eje de meses: una celda cerrada por mes, pegado arriba -->
+        <div class="gantt-axis">
+          <div class="gantt-axis-label-col"></div>
+          <div class="gantt-axis-track">
+            <div
+              v-for="m in months"
+              :key="m.key"
+              class="axis-month"
+              :style="{ left: m.leftPct + '%', width: m.widthPct + '%' }"
+            >
+              <span class="axis-month-label">{{ m.label }}</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Filas (una barra por amenaza) -->
-      <div class="gantt-body custom-scroll">
         <div v-for="bar in bars" :key="bar.id" class="gantt-row">
           <div class="gantt-row-label" :title="`${bar.cve_id} · ${bar.agent_name}`">
             <span class="sev-pip" :style="{ background: color(bar.severity) }"></span>
@@ -43,12 +47,12 @@
           </div>
 
           <div class="gantt-row-track">
-            <!-- Línea guía vertical de cada tick -->
+            <!-- Borde vertical de cada mes (columnas cerradas) -->
             <div
-              v-for="tick in ticks"
-              :key="`g-${bar.id}-${tick.ms}`"
+              v-for="m in months"
+              :key="`g-${bar.id}-${m.key}`"
               class="grid-line"
-              :style="{ left: tick.leftPct + '%' }"
+              :style="{ left: m.leftPct + '%' }"
             ></div>
 
             <!-- Tramos previos a la detección: sin datos / no existía -->
@@ -88,7 +92,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { fmtDayLabel, severityColor } from '../timelineFormatters'
+import { severityColor } from '../timelineFormatters'
 
 const props = defineProps({
   bars: { type: Array, required: true },
@@ -100,22 +104,37 @@ const emit = defineEmits(['open-threat'])
 
 const color = severityColor
 
-const TICK_COUNT = 7
-
-const ticks = computed(() => {
-  const { startMs } = props.range
+// Una celda por mes calendario dentro del rango visible, recortada a los bordes.
+const months = computed(() => {
+  const { startMs, endMs } = props.range
   const span = props.spanMs
+  if (!(span > 0)) return []
   const out = []
-  for (let i = 0; i <= TICK_COUNT; i++) {
-    const ms = startMs + (span * i) / TICK_COUNT
-    out.push({ ms, leftPct: (i / TICK_COUNT) * 100, label: fmtDayLabel(ms) })
+  const start = new Date(startMs)
+  let cur = new Date(start.getFullYear(), start.getMonth(), 1)
+  while (cur.getTime() < endMs) {
+    const next = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)
+    const from = Math.max(cur.getTime(), startMs)
+    const to = Math.min(next.getTime(), endMs)
+    out.push({
+      key: `${cur.getFullYear()}-${cur.getMonth()}`,
+      leftPct: ((from - startMs) / span) * 100,
+      widthPct: ((to - from) / span) * 100,
+      label: cur.toLocaleDateString('es-CL', { month: 'short', year: 'numeric' }),
+    })
+    cur = next
   }
   return out
 })
 
+const isFuture = computed(() => props.range.endMs > Date.now())
+
+const fmtMonth = ms =>
+  new Date(ms).toLocaleDateString('es-CL', { month: 'short', year: 'numeric' })
+
 const rangeLabel = computed(() => {
   const { startMs, endMs } = props.range
-  return `${fmtDayLabel(startMs)} → ${fmtDayLabel(endMs)} (Hoy)`
+  return `${fmtMonth(startMs)} → ${fmtMonth(endMs)}`
 })
 
 const barTitle = bar => {
@@ -144,6 +163,7 @@ const resolvedSegments = bar =>
 .tl-toolbar-left { display: flex; gap: 1rem; align-items: baseline; }
 .tl-year { font-weight: 800; font-size: 0.95rem; }
 .tl-info { font-size: 0.78rem; color: var(--text-muted); }
+.tl-note { font-size: 0.72rem; color: var(--primary); font-weight: 600; cursor: help; }
 .tl-legend { display: flex; gap: 0.85rem; flex-wrap: wrap; }
 .lg-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--text-muted); font-weight: 600; }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -153,16 +173,18 @@ const resolvedSegments = bar =>
 
 .gantt { display: flex; flex-direction: column; }
 
-.gantt-axis { display: flex; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
+.gantt-axis { display: flex; border-bottom: 1px solid var(--border); background: var(--bg-panel); position: sticky; top: 0; z-index: 4; }
 .gantt-axis-label-col { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); }
 .gantt-axis-track { position: relative; flex: 1; height: 34px; }
-.axis-tick { position: absolute; top: 0; height: 100%; transform: translateX(-50%); display: flex; align-items: center; }
-.axis-tick-label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); white-space: nowrap; }
+.axis-month { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.axis-month:last-child { border-right: 1px solid var(--border); }
+.axis-month-label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); white-space: nowrap; text-transform: capitalize; padding: 0 0.3rem; }
 
 .gantt-body { max-height: 560px; overflow-y: auto; }
 
 .gantt-row { display: flex; align-items: stretch; min-height: 32px; border-bottom: 1px solid var(--border); }
 .gantt-row:hover { background: var(--bg-hover); }
+.gantt-row:hover .grid-line { background: var(--bg-hover); }
 
 .gantt-row-label {
   width: 220px;
@@ -179,7 +201,8 @@ const resolvedSegments = bar =>
 .row-agent { font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .gantt-row-track { position: relative; flex: 1; min-width: 0; }
-.grid-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); opacity: 0.5; }
+/* Separa cada mes en un cuadrado distinto: corta las barras en el borde del mes. */
+.grid-line { position: absolute; top: 0; bottom: 0; width: 3px; transform: translateX(-1.5px); background: var(--bg-panel); z-index: 3; }
 
 /* Tramos de contexto (sin datos / no existía / remediada) */
 .gantt-seg {
