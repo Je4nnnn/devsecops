@@ -100,6 +100,7 @@ else
 fi
 
 echo "[4/5] Preparando certificado TLS local..."
+chmod 755 nginx nginx/ssl
 mkdir -p nginx/ssl
 if [ ! -s nginx/ssl/nginx-selfsigned.key ] || [ ! -s nginx/ssl/nginx-selfsigned.crt ]; then
   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
