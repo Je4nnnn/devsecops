@@ -37,7 +37,7 @@ const makeResponse = (overrides = {}) => ({
         package_version: '7.81',
         severity: 'Critical',
         status: 'ACTIVE',
-        start: '2026-02-20T00:00:00Z', // antes del rango -> clip left
+        start: '2026-02-20T00:00:00Z',
         end: null,
         last_seen: '2026-03-30T00:00:00Z'
       }
@@ -63,37 +63,40 @@ describe('useTimelineData', () => {
 
   it('builds the threat list and distinct counts', async () => {
     vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
-    const tl = useTimelineData(props)
+    const timeline = useTimelineData(props)
 
-    await tl.build()
+    await timeline.build()
 
-    expect(tl.hasBuilt.value).toBe(true)
-    expect(tl.bars.value).toHaveLength(2)
-    expect(tl.counts.value.total).toBe(2)
-    expect(tl.counts.value.active).toBe(1)
-    expect(tl.counts.value.resolved).toBe(1)
+    expect(timeline.hasBuilt.value).toBe(true)
+    expect(timeline.bars.value).toHaveLength(2)
+    expect(timeline.counts.value.total).toBe(2)
+    expect(timeline.counts.value.active).toBe(1)
+    expect(timeline.counts.value.resolved).toBe(1)
   })
 
-  it('does nothing without a selected connection', async () => {
-    const tl = useTimelineData({ ...props, selectedConnection: ref('') })
-    await tl.build()
-    expect(tl.hasBuilt.value).toBe(false)
-    expect(vulnService.getThreatSpans).not.toHaveBeenCalled()
+  it('builds a global view without forcing a connection', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
+    const timeline = useTimelineData({ ...props, selectedConnection: ref('') })
+
+    await timeline.build()
+
+    expect(timeline.hasBuilt.value).toBe(true)
+    expect(vulnService.getThreatSpans).toHaveBeenCalledOnce()
+    const params = vulnService.getThreatSpans.mock.calls[0][0]
+    expect(params).not.toHaveProperty('connection_id')
   })
 
   it('clamps bar geometry to the visible range', async () => {
     vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
-    const tl = useTimelineData(props)
-    await tl.build()
+    const timeline = useTimelineData(props)
+    await timeline.build()
 
-    const resolved = tl.bars.value.find(b => b.id === 1)
-    // 5 días desde el inicio sobre 30 días de rango
+    const resolved = timeline.bars.value.find(bar => bar.id === 1)
     expect(resolved.leftPct).toBeCloseTo((5 / 30) * 100, 1)
     expect(resolved.ongoing).toBe(false)
     expect(resolved.clippedRight).toBe(false)
 
-    const ongoing = tl.bars.value.find(b => b.id === 2)
-    // detectada antes del rango -> recortada a la izquierda (left 0)
+    const ongoing = timeline.bars.value.find(bar => bar.id === 2)
     expect(ongoing.clippedLeft).toBe(true)
     expect(ongoing.leftPct).toBe(0)
     expect(ongoing.ongoing).toBe(true)
@@ -102,39 +105,47 @@ describe('useTimelineData', () => {
 
   it('warns when there are more threats than returned', async () => {
     vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse({ total: 500, returned: 2 }))
-    const tl = useTimelineData(props)
-    await tl.build()
-    expect(tl.warningMessage.value).toContain('500')
+    const timeline = useTimelineData(props)
+
+    await timeline.build()
+
+    expect(timeline.warningMessage.value).toContain('500')
   })
 
   it('warns when the range has no threats', async () => {
     vulnService.getThreatSpans.mockResolvedValueOnce(
       makeResponse({ total: 0, active: 0, resolved: 0, returned: 0, items: [] })
     )
-    const tl = useTimelineData(props)
-    await tl.build()
-    expect(tl.warningMessage.value).toContain('No hay amenazas')
+    const timeline = useTimelineData(props)
+
+    await timeline.build()
+
+    expect(timeline.warningMessage.value).toContain('No hay amenazas')
   })
 
   it('surfaces API errors', async () => {
     vulnService.getThreatSpans.mockRejectedValueOnce(new Error('API Error'))
-    const tl = useTimelineData(props)
-    await expect(tl.build()).rejects.toThrow('API Error')
-    expect(tl.errorMessage.value).toContain('generar la linea de tiempo')
+    const timeline = useTimelineData(props)
+
+    await expect(timeline.build()).rejects.toThrow('API Error')
+    expect(timeline.loading.value).toBe(false)
+    expect(timeline.errorMessage.value).toContain('generar la linea de tiempo')
   })
 
   it('passes filters as query params', async () => {
     vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
-    const tl = useTimelineData({
+    const timeline = useTimelineData({
       ...props,
       selectedAgents: ref(['srv-01']),
       selectedVulns: ref(['CVE-2023-1234']),
       selectedSeverities: ref(['CRITICAL', 'HIGH'])
     })
-    await tl.build()
+
+    await timeline.build()
 
     const params = vulnService.getThreatSpans.mock.calls[0][0]
     expect(params.connection_id).toBe('1')
+    expect(params.limit).toBe(300)
     expect(params.agent_name).toBe('srv-01')
     expect(params.cve_id).toBe('CVE-2023-1234')
     expect(params.severity).toBe('CRITICAL,HIGH')

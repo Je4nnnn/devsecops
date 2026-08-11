@@ -4,6 +4,21 @@ import Dashboard from '@/presentation/views/Dashboard.vue'
 import vulnService from '@/application/services/vulnService'
 import wazuhService from '@/application/services/wazuhService'
 
+const startSync = vi.fn()
+const resumeIfActive = vi.fn()
+const onDone = vi.fn()
+
+vi.mock('@/presentation/composables/useSyncJob', () => ({
+    useSyncJob: () => ({
+        isSyncing: false,
+        progressPct: 0,
+        phaseLabel: 'Sincronizando...',
+        startSync,
+        resumeIfActive,
+        onDone
+    })
+}))
+
 vi.mock('@/application/services/vulnService', () => ({
     default: {
         getVulns: vi.fn(),
@@ -72,6 +87,9 @@ const paginated = (items = mockVulns, total = items.length) => ({
 describe('Dashboard.vue', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        startSync.mockReset()
+        resumeIfActive.mockReset()
+        onDone.mockReset()
 
         wazuhService.getConnections.mockResolvedValue({ data: [{ id: 1, name: 'Conn A' }] })
         vulnService.getVulns.mockResolvedValue(paginated())
@@ -322,6 +340,16 @@ describe('Dashboard.vue', () => {
 
         expect(rows[0].text()).toContain('Última actividad')
         expect(rows[1].text()).toContain('Resuelta')
+    })
+
+    it('conecta y ejecuta la sincronización en segundo plano', async () => {
+        const wrapper = await mountDashboard()
+
+        expect(resumeIfActive).toHaveBeenCalledTimes(1)
+        expect(onDone).toHaveBeenCalledTimes(1)
+
+        await wrapper.find('.btn-primary').trigger('click')
+        expect(startSync).toHaveBeenCalledTimes(1)
     })
 
     // --- orden y paginación ---

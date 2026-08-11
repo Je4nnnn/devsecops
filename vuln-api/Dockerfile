@@ -1,17 +1,35 @@
-FROM python:3.12-slim
+ARG PYTHON_IMAGE=python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df
+FROM ${PYTHON_IMAGE} AS dependencies
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN adduser -D -H -s /sbin/nologin appuser && \
+    chown appuser:appuser /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# La API usa JWT HS256; ecdsa es transitiva y no se utiliza.
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall --yes ecdsa && \
+    rm -rf /root/.cache /tmp/*
 
-COPY . .
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UVICORN_HOST=0.0.0.0 \
+    UVICORN_PORT=8000
 
-ENV UVICORN_HOST=0.0.0.0
-ENV UVICORN_PORT=8000
+FROM dependencies AS test
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt && \
+    pip uninstall --yes ecdsa && \
+    rm -rf /root/.cache /tmp/*
+COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser tests ./tests
+USER appuser
+CMD ["pytest", "tests", "--cov=app", "--cov-report=term"]
 
+FROM dependencies AS production
+COPY --chown=appuser:appuser app ./app
+USER appuser
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

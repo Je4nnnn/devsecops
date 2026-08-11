@@ -1,9 +1,21 @@
 # app/wazuh_client.py
 import base64
+import os
+
 import requests
 
 VULN_INDEX = "wazuh-states-vulnerabilities-*/_search"
 BATCH_SIZE = 10_000
+
+
+def _tls_verification():
+    value = os.getenv("WAZUH_VERIFY_TLS", "true").strip()
+    normalized = value.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return value
 
 
 def _basic_auth_header(user: str, password: str) -> dict:
@@ -12,56 +24,93 @@ def _basic_auth_header(user: str, password: str) -> dict:
     return {"Authorization": f"Basic {token}"}
 
 
-def fetch_all_vulns(indexer_url: str, wazuh_user: str, wazuh_password: str):
-    """Trae TODAS las vulnerabilidades usando search_after (sin límite de 10k)."""
-    url = f"{indexer_url}/{VULN_INDEX}"
-    headers = _basic_auth_header(wazuh_user, wazuh_password)
-    all_sources = []
-    search_after = None
+class WazuhVulnerabilityStream:
+    """Iterador paginado que mantiene como maximo un lote de Wazuh en memoria."""
 
-    while True:
+    def __init__(self, indexer_url: str, wazuh_user: str, wazuh_password: str):
+        self.url = f"{indexer_url.rstrip('/')}/{VULN_INDEX}"
+        self.headers = _basic_auth_header(wazuh_user, wazuh_password)
+        self.batch_size = int(os.getenv("WAZUH_BATCH_SIZE", str(BATCH_SIZE)))
+        self.timeout = int(os.getenv("WAZUH_REQUEST_TIMEOUT", "120"))
+        self._first_hits = None
+        self._primed = False
+        self._total = None
+        self._consumed = False
+
+    def _request(self, search_after=None):
         body = {
-            "size": BATCH_SIZE,
+            "size": self.batch_size,
             "_source": True,
+            "track_total_hits": True,
             "sort": [
                 {"@timestamp": {"order": "asc", "unmapped_type": "date"}},
                 {"_id": "asc"}
             ]
         }
-        if search_after:
+        if search_after is not None:
             body["search_after"] = search_after
 
         resp = requests.post(
-            url,
+            self.url,
             json=body,
-            headers=headers,
-            verify=False,
-            timeout=120
+            headers=self.headers,
+            verify=_tls_verification(),
+            timeout=self.timeout,
         )
         resp.raise_for_status()
+        payload = resp.json().get("hits") or {}
+        return payload, payload.get("hits") or []
 
-        hits = resp.json()["hits"]["hits"]
-        if not hits:
-            break
+    def _prime(self):
+        if self._primed:
+            return
+        payload, hits = self._request()
+        raw_total = payload.get("total", len(hits))
+        if isinstance(raw_total, dict):
+            raw_total = raw_total.get("value", len(hits))
+        self._total = int(raw_total)
+        self._primed = True
+        self._first_hits = hits
 
-        all_sources.extend(h["_source"] for h in hits)
-        print(f"[wazuh_client] Descargadas {len(all_sources)} vulnerabilidades...")
+    def __len__(self):
+        self._prime()
+        return self._total
 
-        if len(hits) < BATCH_SIZE:
-            break
+    def __iter__(self):
+        if self._consumed:
+            raise RuntimeError("El flujo Wazuh solo puede recorrerse una vez")
+        self._consumed = True
+        self._prime()
 
-        search_after = hits[-1]["sort"]
+        hits = self._first_hits
+        self._first_hits = None
+        downloaded = 0
+        while hits:
+            for hit in hits:
+                yield hit["_source"]
 
-    print(f"[wazuh_client] Total descargado: {len(all_sources)}")
-    return all_sources
+            downloaded += len(hits)
+            print(f"[wazuh_client] Descargadas {downloaded}/{self._total} vulnerabilidades...")
+
+            if len(hits) < self.batch_size:
+                break
+
+            _, hits = self._request(hits[-1]["sort"])
+
+        print(f"[wazuh_client] Total descargado: {downloaded}")
+
+
+def fetch_all_vulns(indexer_url: str, wazuh_user: str, wazuh_password: str):
+    """Devuelve un flujo Sized/iterable compatible con la ingesta existente."""
+    return WazuhVulnerabilityStream(indexer_url, wazuh_user, wazuh_password)
 
 
 def test_connection(indexer_url: str, wazuh_user: str, wazuh_password: str) -> bool:
     try:
         resp = requests.get(
-            indexer_url,
+            indexer_url.rstrip("/"),
             headers=_basic_auth_header(wazuh_user, wazuh_password),
-            verify=False,
+            verify=_tls_verification(),
             timeout=10
         )
         return resp.status_code == 200

@@ -39,30 +39,30 @@ describe('TimelineFilters.vue', () => {
     expect(wrapper.emitted('update:selectedConnection')[0]).toEqual([1])
   })
 
-  it('renders the "Desde" date input bound to startDate', () => {
+  it('renders the "Desde" month input bound to startDate', () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    const dateInput = wrapper.find('input[type="date"]')
-    expect(dateInput.exists()).toBe(true)
-    expect(dateInput.element.value).toBe('2026-03-01')
+    const monthInput = wrapper.find('input[type="month"]')
+    expect(monthInput.exists()).toBe(true)
+    expect(monthInput.element.value).toBe('2026-03')
   })
 
-  it('emits update:startDate when the date changes', async () => {
+  it('emits the first day when the start month changes', async () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    const dateInput = wrapper.find('input[type="date"]')
-    await dateInput.setValue('2026-04-10')
+    const monthInput = wrapper.find('input[type="month"]')
+    await monthInput.setValue('2026-04')
     expect(wrapper.emitted('update:startDate')).toBeTruthy()
-    expect(wrapper.emitted('update:startDate')[0]).toEqual(['2026-04-10'])
+    expect(wrapper.emitted('update:startDate')[0]).toEqual(['2026-04-01'])
   })
 
-  it('renders the "Hasta" date input and emits update:endDate', async () => {
+  it('renders the end month and emits its last calendar day', async () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    const dateInputs = wrapper.findAll('input[type="date"]')
-    expect(dateInputs).toHaveLength(2)
-    expect(dateInputs[1].element.value).toBe('2026-03-31')
+    const monthInputs = wrapper.findAll('input[type="month"]')
+    expect(monthInputs).toHaveLength(2)
+    expect(monthInputs[1].element.value).toBe('2026-03')
 
-    await dateInputs[1].setValue('2026-03-20')
+    await monthInputs[1].setValue('2026-04')
     expect(wrapper.emitted('update:endDate')).toBeTruthy()
-    expect(wrapper.emitted('update:endDate')[0]).toEqual(['2026-03-20'])
+    expect(wrapper.emitted('update:endDate')[0]).toEqual(['2026-04-30'])
   })
 
   it('opens the agent dropdown when clicked', async () => {
@@ -133,9 +133,9 @@ describe('TimelineFilters.vue', () => {
     expect(wrapper.emitted('build')).toBeTruthy()
   })
 
-  it('disables build button when no connection selected', () => {
+  it('allows building a consolidated timeline without selecting a connection', () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    expect(wrapper.find('.btn-primary').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.btn-primary').attributes('disabled')).toBeUndefined()
   })
 
   it('disables build button when loading', () => {

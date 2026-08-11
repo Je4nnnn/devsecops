@@ -2,59 +2,129 @@ pipeline {
     agent any
 
     environment {
-        OWASP_URL = "http://api:8000/openapi.json"
-        SONAR_SERVER_URL = "http://sonarqube:9000"
+        SONAR_SERVER_URL = 'http://sonarqube:9000'
+        SONAR_PROJECT_KEY = 'vuln-app'
+        SONAR_QUALITY_GATE_NAME = 'DevSecOps CI Gate'
+        SONAR_MIN_COVERAGE = '70'
+        BACKEND_MIN_COVERAGE = '70'
+        FRONTEND_MIN_COVERAGE = '60'
+        TRIVY_IMAGE = 'aquasec/trivy:0.70.0'
+        TRIVY_FAIL_SEVERITIES = 'CRITICAL,HIGH'
+        TRIVY_SEVERITY = 'CRITICAL,HIGH'
+        TRIVY_IGNORE_UNFIXED = 'true'
+        TRIVY_IGNORE_IDS = 'GHSA-537c-gmf6-5ccf'
+        ZAP_FAIL_RISK_LEVELS = 'High'
     }
 
     options {
         ansiColor('xterm')
         disableConcurrentBuilds()
+        timestamps()
     }
 
     stages {
+        stage('CI: Prepare Ephemeral Environment') {
+            steps {
+                sh '''
+                    set -eu
+                    umask 077
+                    POSTGRES_PASSWORD=$(openssl rand -hex 24)
+                    INITIAL_ADMIN_PASSWORD=$(openssl rand -hex 12)
+                    JWT_SECRET=$(openssl rand -hex 32)
+                    ENCRYPTION_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n')
+                    {
+                        printf 'APP_VERSION=entrega3-portable\n'
+                        printf 'POSTGRES_DB=vulnerabilidades_db\n'
+                        printf 'POSTGRES_USER=vuln_app\n'
+                        printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+                        printf 'APP_ENV=production\n'
+                        printf 'INITIAL_ADMIN_USERNAME=admin\n'
+                        printf 'INITIAL_ADMIN_PASSWORD=%s\n' "$INITIAL_ADMIN_PASSWORD"
+                        printf 'JWT_SECRET=%s\n' "$JWT_SECRET"
+                        printf 'ENCRYPTION_KEY=%s\n' "$ENCRYPTION_KEY"
+                        printf 'VITE_API_URL=/api\n'
+                        printf 'WAZUH_VERIFY_TLS=false\n'
+                        printf 'API_IMAGE=devsecops-api:entrega3-portable\n'
+                        printf 'FRONTEND_IMAGE=devsecops-frontend:entrega3-portable\n'
+                    } > .env
+                '''
+            }
+        }
+
         stage('CI: Backend Tests & Coverage') {
             steps {
-                script {
-                    sh '''
-                        docker rm -f temp-tests || true
-                        docker compose run --name temp-tests api sh -c "PYTHONPATH=/app pytest tests --cov=app --cov-report=xml:coverage.xml"
-                        docker cp temp-tests:/app/coverage.xml vuln-api/coverage.xml
-                        docker rm temp-tests
-                        sed -i 's|<source>/app/app</source>|<source>vuln-api/app</source>|g' vuln-api/coverage.xml
-                    '''
-                }
+                sh '''
+                    set -eu
+                    mkdir -p reports
+                    docker rm -f temp-tests >/dev/null 2>&1 || true
+                    docker build --target test --tag vuln-api-test ./vuln-api
+                    docker create --name temp-tests vuln-api-test \
+                        sh -c "PYTHONPATH=/app pytest tests --junitxml=/tmp/backend-junit.xml --cov=app --cov-report=term --cov-report=xml:coverage.xml" \
+                        >/dev/null
+                    docker start --attach temp-tests
+                    docker cp temp-tests:/app/coverage.xml vuln-api/coverage.xml
+                    docker cp temp-tests:/tmp/backend-junit.xml "reports/backend-junit_$BUILD_NUMBER.xml" || true
+                    docker rm temp-tests >/dev/null
+                    sed -i 's|<source>/app/app</source>|<source>vuln-api/app</source>|g' vuln-api/coverage.xml
+                '''
+            }
+        }
+
+        stage('GATE: Backend Coverage') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_coverage.py \
+                        --type cobertura \
+                        --file vuln-api/coverage.xml \
+                        --minimum "$BACKEND_MIN_COVERAGE" \
+                        --label Backend
+                '''
             }
         }
 
         stage('CI: Frontend Tests & Build') {
             steps {
-                script {
-                    sh '''
-                        cat << 'EOF' > frontend/Dockerfile.test
-FROM node:24-alpine
+                sh '''
+                    set -eu
+                    cat << 'EOF' > frontend/Dockerfile.test
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+RUN chown -R node:node /app
+USER node
 RUN npm run test:coverage
 EOF
 
-                        docker build -t frontend-test-img -f frontend/Dockerfile.test frontend/
+                    docker build -t frontend-test-img -f frontend/Dockerfile.test frontend/
 
-                        docker rm -f temp-front-tests || true
-                        docker create --name temp-front-tests frontend-test-img
-                        
-                        rm -rf frontend/coverage
-                        
-                        docker cp temp-front-tests:/app/coverage frontend/coverage
-                        docker rm temp-front-tests
-                        
-                        sed -i 's|SF:/app/src/|SF:frontend/src/|g' frontend/coverage/lcov.info
-                        sed -i 's|SF:src/|SF:frontend/src/|g' frontend/coverage/lcov.info
-                        
-                        docker compose build frontend
-                    '''
-                }
+                    docker rm -f temp-front-tests >/dev/null 2>&1 || true
+                    docker create --name temp-front-tests frontend-test-img >/dev/null
+
+                    rm -rf frontend/coverage
+                    docker cp temp-front-tests:/app/coverage frontend/coverage
+                    docker rm temp-front-tests >/dev/null
+
+                    sed -i 's|SF:/app/src/|SF:frontend/src/|g' frontend/coverage/lcov.info
+                    sed -i 's|SF:src/|SF:frontend/src/|g' frontend/coverage/lcov.info
+
+                    docker compose build --pull frontend
+                '''
+            }
+        }
+
+        stage('GATE: Frontend Coverage') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_coverage.py \
+                        --type lcov \
+                        --file frontend/coverage/lcov.info \
+                        --minimum "$FRONTEND_MIN_COVERAGE" \
+                        --label Frontend
+                '''
             }
         }
 
@@ -96,27 +166,54 @@ EOF
             }
         }
 
-        stage('SAST: SonarQube Code Analysis'){
+        stage('GATE: SonarQube Availability') {
+            steps {
+                sh '''
+                    set -eu
+                    docker run --rm --network=sonarqube_sonar-network curlimages/curl:8.12.1 \
+                        -fsS "${SONAR_SERVER_URL}/api/system/status" | grep -q '"status":"UP"'
+                    echo 'GATE SonarQube Availability: OK'
+                '''
+            }
+        }
+
+        stage('SAST: Configure SonarQube Quality Gate') {
+            environment {
+                SONAR_TOKEN = credentials('sonar-token')
+            }
+            steps {
+                script {
+                    docker.image('python:3.12-alpine').inside('--network=sonarqube_sonar-network --user=root') {
+                        sh '''
+                            set -eu
+                            python3 dev-tools/jenkins/scripts/configure_sonar_gate.py
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('SAST: SonarQube Code Analysis') {
             environment {
                 SONAR_TOKEN = credentials('sonar-token')
             }
             steps {
                 script {
                     withSonarQubeEnv('sonarqube') {
-                        docker.image('sonarsource/sonar-scanner-cli').inside("--network=sonarqube_sonar-network --user=root") {
+                        docker.image('sonarsource/sonar-scanner-cli').inside('--network=sonarqube_sonar-network --user=root') {
                             sh '''
-                            set -eu
-                            sonar-scanner \
-                                -Dproject.settings=dev-tools/sonarqube/sonar-project.properties \
-                                -Dsonar.projectBaseDir=. \
-                                -Dsonar.host.url=$SONAR_SERVER_URL \
-                                -Dsonar.token=$SONAR_TOKEN
+                                set -eu
+                                sonar-scanner \
+                                    -Dproject.settings=dev-tools/sonarqube/sonar-project.properties \
+                                    -Dsonar.projectBaseDir=. \
+                                    -Dsonar.host.url=$SONAR_SERVER_URL \
+                                    -Dsonar.token=$SONAR_TOKEN
                             '''
-                        }     
+                        }
                     }
                 }
             }
-        } 
+        }
 
         stage('GATE: SonarQube Quality Gate') {
             environment {
@@ -125,13 +222,13 @@ EOF
             steps {
                 script {
                     timeout(time: 5, unit: 'MINUTES') {
-                        docker.image('python:3.12-alpine').inside("--network=sonarqube_sonar-network --user=root") {
+                        docker.image('python:3.12-alpine').inside('--network=sonarqube_sonar-network --user=root') {
                             sh '''
                                 set -eu
 
                                 report_file=".scannerwork/report-task.txt"
                                 if [ ! -f "$report_file" ]; then
-                                    echo "No se encontró $report_file"
+                                    echo "No se encontro $report_file"
                                     exit 1
                                 fi
 
@@ -171,7 +268,7 @@ PY
                                     fi
 
                                     if [ "$status" = "FAILED" ] || [ "$status" = "CANCELED" ]; then
-                                        echo "La tarea de SonarQube terminó con estado: $status"
+                                        echo "La tarea de SonarQube termino con estado: $status"
                                         exit 1
                                     fi
 
@@ -181,7 +278,7 @@ PY
                                 done
 
                                 if [ -z "$analysisId" ]; then
-                                    echo "SonarQube no entregó analysisId dentro del timeout"
+                                    echo "SonarQube no entrego analysisId dentro del timeout"
                                     exit 1
                                 fi
 
@@ -197,13 +294,25 @@ req = urllib.request.Request(url)
 req.add_header("Authorization", "Basic " + base64.b64encode(f"{token}:".encode()).decode())
 with urllib.request.urlopen(req, timeout=30) as resp:
     data = json.loads(resp.read().decode())
-print(data["projectStatus"]["status"])
+project_status = data["projectStatus"]
+for condition in project_status.get("conditions", []):
+    print(
+        "Condition: {metric} {op} {error} actual={actual} status={status}".format(
+            metric=condition.get("metricKey", "unknown"),
+            op=condition.get("comparator", ""),
+            error=condition.get("errorThreshold", ""),
+            actual=condition.get("actualValue", ""),
+            status=condition.get("status", ""),
+        ),
+        file=__import__("sys").stderr,
+    )
+print(project_status["status"])
 PY
 )
                                 echo "Quality Gate: $gate"
 
                                 if [ "$gate" != "OK" ]; then
-                                    echo "Quality Gate falló con estado: $gate"
+                                    echo "Quality Gate fallo con estado: $gate"
                                     exit 1
                                 fi
                             '''
@@ -213,41 +322,131 @@ PY
             }
         }
 
-        stage('DAST: OWASP ZAP Dynamic Scan'){
+        stage('SCA: Trivy Dependency Scan') {
+            steps {
+                sh '''
+                    set -eu
+                    chmod +x dev-tools/jenkins/scripts/run_trivy.sh
+                    ./dev-tools/jenkins/scripts/run_trivy.sh "$BUILD_NUMBER" fs
+                '''
+            }
+        }
+
+        stage('GATE: Trivy SCA') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_trivy.py "reports/trivy_fs_${BUILD_NUMBER}.json"
+                '''
+            }
+        }
+
+        stage('Container: Build Images for Trivy') {
+            steps {
+                sh '''
+                    set -eu
+                    COMPOSE_PROJECT_NAME=jenkins-security docker compose -f docker-compose.yml build --pull --no-cache api frontend
+                '''
+            }
+        }
+
+        stage('Container: Trivy Image Scan') {
+            steps {
+                sh '''
+                    set -eu
+                    COMPOSE_PROJECT_NAME=jenkins-security \
+                    BACKEND_IMAGE=devsecops-api:entrega3-portable \
+                    FRONTEND_IMAGE=devsecops-frontend:entrega3-portable \
+                        ./dev-tools/jenkins/scripts/run_trivy.sh "$BUILD_NUMBER" images
+                '''
+            }
+        }
+
+        stage('GATE: Trivy Containers') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_trivy.py \
+                        "reports/trivy_backend_image_${BUILD_NUMBER}.json" \
+                        "reports/trivy_frontend_image_${BUILD_NUMBER}.json"
+                '''
+            }
+        }
+
+        stage('DAST: OWASP ZAP Dynamic Scan') {
             steps {
                 script {
                     withEnv([
                         'COMPOSE_PROJECT_NAME=jenkins-dast',
                         'NETWORK=jenkins-dast_app-network',
                         'TARGET_API=http://api:8000/openapi.json',
-                        'TARGET_FRONTEND=http://frontend:80'
+                        'TARGET_FRONTEND=http://frontend:80',
+                        'DB_HOST_PORT=0',
+                        'FRONTEND_HTTP_PORT=0',
+                        'FRONTEND_HTTPS_PORT=0'
                     ]) {
                         sh 'docker compose -f docker-compose.yml up -d db-api api'
-                        sh 'docker compose -f docker-compose.yml build frontend'
-                        sh 'docker rm -f jenkins-dast-frontend >/dev/null 2>&1 || true'
-                        sh 'docker run -d --name jenkins-dast-frontend --network jenkins-dast_app-network --network-alias frontend jenkins-dast-frontend'
+                        sh '''
+                            cat << 'EOF' > frontend/nginx.conf
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+                        '''
+                        sh 'docker compose -f docker-compose.yml build --pull --no-cache frontend'
+                        sh 'docker compose -f docker-compose.yml up -d frontend'
                         sh 'mkdir -p reports && chmod 777 reports'
-                        sh 'chmod +x dev-tools/jenkins/scripts/run_zap.sh'
-                        sh "./dev-tools/jenkins/scripts/run_zap.sh ${env.BUILD_NUMBER}"
+                        sh '''
+                            chmod +x dev-tools/jenkins/scripts/run_zap.sh
+                        '''
+                        sh '''
+                            APP_PASSWORD=$(sed -n 's/^INITIAL_ADMIN_PASSWORD=//p' .env) \
+                                ./dev-tools/jenkins/scripts/run_zap.sh "$BUILD_NUMBER"
+                        '''
                     }
                 }
             }
         }
-    } 
 
-   post {
+        stage('GATE: OWASP ZAP') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 dev-tools/jenkins/scripts/gate_zap.py \
+                        "reports/zap_api_report_${BUILD_NUMBER}.json" \
+                        "reports/zap_frontend_report_${BUILD_NUMBER}.json"
+                '''
+            }
+        }
+    }
+
+    post {
         always {
             script {
                 def scanId = env.BUILD_NUMBER
-
-                // Archivamos ambos HTMLs en los artefactos del Build
-                archiveArtifacts artifacts: "reports/zap_api_report_${scanId}.html, reports/zap_frontend_report_${scanId}.html", 
-                                 onlyIfSuccessful: false, 
-                                 allowEmptyArchive: true 
+                archiveArtifacts artifacts: "reports/*_${scanId}.html, reports/*_${scanId}.json, reports/*_${scanId}.xml, vuln-api/coverage.xml, frontend/coverage/lcov.info",
+                    onlyIfSuccessful: false,
+                    allowEmptyArchive: true
             }
-            sh 'docker rm -f jenkins-dast-frontend >/dev/null 2>&1 || true'
+            sh 'docker rm -f temp-tests temp-front-tests jenkins-dast-frontend >/dev/null 2>&1 || true'
             sh 'COMPOSE_PROJECT_NAME=jenkins-dast docker compose -f docker-compose.yml down -v || true'
+            sh 'COMPOSE_PROJECT_NAME=jenkins-ci docker compose -f docker-compose.yml down -v || true'
             sh 'docker ps -a'
         }
     }
-} 
+}

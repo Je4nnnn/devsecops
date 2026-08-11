@@ -7,16 +7,20 @@ services:
     user: root
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - jenkins_data:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - JAVA_OPTS=-Xmx1024m -Xms256m -XX:+UseG1GC -XX:+ExplicitGCInvokesConcurrent -XX:+ParallelRefProcEnabled -XX:+UseStringDeduplication
+      - JAVA_OPTS=-Xmx512m -Xms128m -XX:+UseG1GC -XX:+ExplicitGCInvokesConcurrent -XX:+ParallelRefProcEnabled -XX:+UseStringDeduplication -Djenkins.install.runSetupWizard=false
+      - JENKINS_ADMIN_ID=admin
+      - PIPELINE_JOB_NAME=devsecops-pipeline
+      - PIPELINE_GIT_URL=https://github.com/Je4nnnn/devsecops
+      - PIPELINE_GIT_BRANCH=*/codex/entrega3-portable-qa
+      - PIPELINE_SCRIPT_PATH=dev-tools/jenkins/Jenkinsfile
     networks:
       - jenkins-network
-      - sonar-network
       - app-network
 
 volumes:
@@ -27,9 +31,6 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: 1460
-  sonar-network:
-    external: true
-    name: sonarqube_sonar-network
   app-network:
     external: true
     name: vuln-app-wazuh_app-network

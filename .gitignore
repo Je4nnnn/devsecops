@@ -1,0 +1,38 @@
+# Secretos y configuracion local
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Certificados generados en cada equipo
+nginx/ssl/*
+!nginx/ssl/.gitkeep
+certbot/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+
+# Node / Vite
+node_modules/
+dist/
+coverage/
+
+# Artefactos y reportes locales
+offline-dist/
+reports/
+.trivy-cache/
+*.tar
+*.tar.gz
+*.sha256
+
+# IDE / sistema operativo
+.idea/
+.vscode/
+*.iml
+.DS_Store

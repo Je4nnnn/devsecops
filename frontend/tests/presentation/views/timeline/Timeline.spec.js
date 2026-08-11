@@ -139,6 +139,19 @@ describe('Timeline.vue', () => {
     expect(wrapper.vm.selectedEvent.history).toHaveLength(1)
   })
 
+  it('keeps the modal open with empty history when history loading fails', async () => {
+    vulnService.getVulnHistory.mockRejectedValueOnce(new Error('History error'))
+    const wrapper = mount(Timeline)
+    await flushPromises()
+
+    await wrapper.vm.openThreat({ id: 7, cve_id: 'CVE-2023-1234' })
+    await flushPromises()
+
+    expect(wrapper.vm.modalOpen).toBe(true)
+    expect(wrapper.vm.selectedEvent.history).toEqual([])
+    expect(wrapper.vm.modalLoading).toBe(false)
+  })
+
   it('handles a connection load error gracefully', async () => {
     wazuhService.getConnections.mockRejectedValueOnce(new Error('Network error'))
     const wrapper = mount(Timeline)

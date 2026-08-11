@@ -111,16 +111,22 @@ const months = computed(() => {
   if (!(span > 0)) return []
   const out = []
   const start = new Date(startMs)
-  let cur = new Date(start.getFullYear(), start.getMonth(), 1)
+  let cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1))
   while (cur.getTime() < endMs) {
-    const next = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)
+    const next = new Date(
+      Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1)
+    )
     const from = Math.max(cur.getTime(), startMs)
     const to = Math.min(next.getTime(), endMs)
     out.push({
-      key: `${cur.getFullYear()}-${cur.getMonth()}`,
+      key: `${cur.getUTCFullYear()}-${cur.getUTCMonth()}`,
       leftPct: ((from - startMs) / span) * 100,
       widthPct: ((to - from) / span) * 100,
-      label: cur.toLocaleDateString('es-CL', { month: 'short', year: 'numeric' }),
+      label: cur.toLocaleDateString('es-CL', {
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      }),
     })
     cur = next
   }
@@ -129,8 +135,11 @@ const months = computed(() => {
 
 const isFuture = computed(() => props.range.endMs > Date.now())
 
-const fmtMonth = ms =>
-  new Date(ms).toLocaleDateString('es-CL', { month: 'short', year: 'numeric' })
+const fmtMonth = ms => new Date(ms).toLocaleDateString('es-CL', {
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+})
 
 const rangeLabel = computed(() => {
   const { startMs, endMs } = props.range

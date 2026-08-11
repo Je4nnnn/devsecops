@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .models import User
 
-SECRET_KEY = os.getenv("JWT_SECRET", "dev-secret-key")
+SECRET_KEY = os.getenv("JWT_SECRET")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET no esta definida en las variables de entorno")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

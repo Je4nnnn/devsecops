@@ -105,14 +105,25 @@ class WazuhConnectionRequest(BaseModel):
     wazuh_password: str
 
 
+def _initial_admin_credentials() -> tuple[str, str]:
+    username = os.getenv("INITIAL_ADMIN_USERNAME", "admin").strip() or "admin"
+    password = os.getenv("INITIAL_ADMIN_PASSWORD")
+    if password:
+        return username, password
+    if os.getenv("APP_ENV", "development").lower() == "production":
+        raise RuntimeError("INITIAL_ADMIN_PASSWORD debe estar definida en produccion")
+    return username, "admin"
+
+
 def create_default_admin():
+    username, password = _initial_admin_credentials()
     db = SessionLocal()
     try:
-        if not db.query(User).filter(User.username == "admin").first():
-            print("Creando usuario admin default...")
+        if not db.query(User).filter(User.username == username).first():
+            print(f"Creando usuario administrador inicial: {username}")
             db.add(User(
-                username="admin",
-                password_hash=hash_password("admin"),
+                username=username,
+                password_hash=hash_password(password),
                 is_active=True,
                 is_default_password=True,
             ))
@@ -125,13 +136,19 @@ create_default_admin()
 
 app = FastAPI(title="Vulnerability Aggregator API", root_path="/api")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 # ---------------------------------------------------------------------------

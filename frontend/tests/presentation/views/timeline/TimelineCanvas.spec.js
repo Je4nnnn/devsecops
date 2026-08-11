@@ -55,10 +55,9 @@ describe('TimelineCanvas.vue', () => {
     expect(wrapper.findAll('.gantt-row')).toHaveLength(2)
   })
 
-  it('renders date axis ticks', () => {
+  it('renders one calendar cell per visible month', () => {
     const wrapper = mountCanvas()
-    // TICK_COUNT (7) + 1 boundary tick
-    expect(wrapper.findAll('.axis-tick')).toHaveLength(8)
+    expect(wrapper.findAll('.axis-month')).toHaveLength(1)
   })
 
   it('marks the ongoing threat with the ongoing class', () => {

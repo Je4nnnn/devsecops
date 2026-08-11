@@ -2,7 +2,8 @@ name: ${COMPOSE_PROJECT_NAME:-vuln-app-wazuh}
 
 services:
   db-api:
-    image: ${DB_IMAGE:-timescale/timescaledb@sha256:867dc9cbb3232dece516122d49e56ce472754fe31cbffb54d64920f8d2ed79b6}
+    image: ${DB_IMAGE:?Defina DB_IMAGE en .env}
+    pull_policy: never
     command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
     restart: unless-stopped
     env_file:
@@ -27,10 +28,11 @@ services:
         max-file: "3"
 
   api:
-    image: ${API_IMAGE:-devsecops-api:entrega3-portable}
-    build:
-      context: ./vuln-api
-      target: production
+    image: ${API_IMAGE:?Defina API_IMAGE en .env}
+    pull_policy: never
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
       DATABASE_HOST: db-api
       DATABASE_PORT: "5432"
@@ -40,9 +42,6 @@ services:
         condition: service_healthy
     networks:
       - app-network
-    restart: unless-stopped
-    env_file:
-      - .env
     read_only: true
     tmpfs:
       - /tmp
@@ -60,11 +59,9 @@ services:
         max-file: "3"
 
   frontend:
-    image: ${FRONTEND_IMAGE:-devsecops-frontend:entrega3-portable}
-    build:
-      context: ./frontend
-      args:
-        VITE_API_URL: ${VITE_API_URL:-/api}
+    image: ${FRONTEND_IMAGE:?Defina FRONTEND_IMAGE en .env}
+    pull_policy: never
+    restart: unless-stopped
     env_file:
       - .env
     ports:
@@ -75,7 +72,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - app-network
     read_only: true
     tmpfs:
       - /var/cache/nginx:uid=101,gid=101
@@ -89,8 +87,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    networks:
-      - app-network
     logging:
       options:
         max-size: "10m"

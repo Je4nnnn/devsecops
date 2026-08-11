@@ -1,7 +1,7 @@
 # 📋 Documentación Técnica — DevSecOps Vulnerability Platform
 
 > **Versión:** 1.1 — **Fecha:** 2026-05-28
-> **Autor:** Equipo VTYG
+> **Autor:** Equipo DEVSECOPS GRUPO 8
 >
 > **Novedades v1.1 (Entrega 2 — Análisis de Evolución):** procesamiento temporal
 > en backend (stored procedures + índices), listado **paginado y filtrado

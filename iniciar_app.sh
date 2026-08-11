@@ -1,94 +1,56 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# ==========================================
-# Variables para la gestión segura del Cronjob
-# ==========================================
-PROJECT_DIR=$(pwd)
-CRON_MARKER="# VULN_APP_CERTBOT_RENEWAL"
-# El comando entra a la carpeta del proyecto, intenta renovar, y si tiene éxito, recarga Nginx
-CRON_CMD="0 3 * * * cd \"$PROJECT_DIR\" && docker compose run --rm certbot renew --quiet && docker exec frontend nginx -s reload"
+PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+cd "${PROJECT_DIR}"
 
-echo "================================================="
-echo "   Selector de Entorno: Autofirmado vs Let's Encrypt"
-echo "================================================="
-echo "1) Sin Dominio (Certificados Autofirmados / Local)"
-echo "2) Con Dominio (Certificados Let's Encrypt / Prod)"
-echo "================================================="
-read -p "Selecciona una opción (1 o 2): " OPCION
-
-if [ "$OPCION" == "1" ]; then
-    echo -e "\n[+] Deteniendo contenedores y limpiando certificados anteriores..."
-    docker compose down 2>/dev/null
-    rm -rf ./certbot ./nginx/ssl
-
-    echo "[+] Configurando entorno SIN dominio..."
-    cp prod_config/docker-compose.nodomain.yml docker-compose.yml
-    cp prod_config/nginx.nodomain.conf frontend/nginx.conf
-
-    echo "[+] Generando certificados autofirmados locales..."
-    mkdir -p ./nginx/ssl
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout ./nginx/ssl/nginx-selfsigned.key \
-        -out ./nginx/ssl/nginx-selfsigned.crt \
-        -subj "/C=CL/ST=RM/L=Santiago/O=Desarrollo/CN=localhost" 2>/dev/null
-
-    # --- LÓGICA DE CRON: ELIMINACIÓN SEGURA ---
-    if crontab -l 2>/dev/null | grep -q "$CRON_MARKER"; then
-        echo "[+] Eliminando tarea de renovación automática (Cronjob)..."
-        crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | crontab -
-    fi
-
-    echo "[+] Levantando contenedores..."
-    docker compose up -d --build
-
-elif [ "$OPCION" == "2" ]; then
-    echo -e "\n[+] Configurando entorno CON dominio..."
-    read -p "Ingresa tu dominio (ej: midominio.cl): " DOMINIO
-    read -p "Ingresa tu correo (para avisos de expiración de Let's Encrypt): " EMAIL
-
-    echo "[+] Deteniendo contenedores y limpiando certificados anteriores..."
-    docker compose down 2>/dev/null
-    rm -rf ./certbot ./nginx/ssl
-
-    echo "[+] Aplicando configuraciones de red..."
-    cp prod_config/docker-compose.domain.yml docker-compose.yml
-    cp prod_config/nginx.domain.conf frontend/nginx.conf
-
-    sed -i "s/{{DOMAIN}}/$DOMINIO/g" frontend/nginx.conf
-
-    echo "[+] Solicitando certificado oficial a Let's Encrypt para $DOMINIO..."
-    
-    if docker run --rm -p 80:80 \
-        -v "$(pwd)/certbot/conf:/etc/letsencrypt" \
-        certbot/certbot certonly --standalone \
-        -d "$DOMINIO" \
-        --non-interactive \
-        --agree-tos \
-        -m "$EMAIL"; then
-        
-        echo -e "\n[+] Certificados obtenidos correctamente. Levantando la aplicación..."
-        docker compose up -d --build
-
-        # --- LÓGICA DE CRON: INSERCIÓN SEGURA ---
-        echo "[+] Configurando tarea de renovación automática (Cronjob)..."
-        # 1. Borramos si ya existía para no duplicar
-        if crontab -l 2>/dev/null | grep -q "$CRON_MARKER"; then
-            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | crontab -
-        fi
-        # 2. Agregamos el nuevo cronjob con el marcador
-        (crontab -l 2>/dev/null; echo "$CRON_CMD $CRON_MARKER") | crontab -
-        echo "[+] Cronjob instalado. Tu certificado se renovará automáticamente."
-    else
-        echo -e "\n[ERROR] Certbot falló en la obtención del certificado."
-        echo "Verifica que los puertos 80 y 443 estén libres y que el dominio apunte a tu IP."
-        exit 1
-    fi
-
-else
-    echo "Opción inválida. Abortando."
-    exit 1
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ERROR: ejecute sudo ./iniciar_app.sh para preparar permisos TLS y Docker." >&2
+  exit 2
 fi
 
-echo -e "\n================================================="
-echo "¡Cambio de entorno completado con éxito!"
-echo "================================================="
+for command_name in docker openssl; do
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    echo "ERROR: falta el comando ${command_name}." >&2
+    exit 2
+  fi
+done
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "ERROR: se requiere Docker Compose v2 (comando docker compose)." >&2
+  exit 2
+fi
+
+if [ ! -f .env ]; then
+  cp .env.example .env
+  chmod 600 .env
+  echo "Se creo .env desde la plantilla." >&2
+  echo "Reemplace todos los valores REEMPLAZAR_* y vuelva a ejecutar el script." >&2
+  exit 2
+fi
+
+if grep -q 'REEMPLAZAR_' .env; then
+  echo "ERROR: .env contiene secretos sin configurar (REEMPLAZAR_*)." >&2
+  exit 2
+fi
+
+mkdir -p nginx/ssl
+if [ ! -s nginx/ssl/nginx-selfsigned.key ] || [ ! -s nginx/ssl/nginx-selfsigned.crt ]; then
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout nginx/ssl/nginx-selfsigned.key \
+    -out nginx/ssl/nginx-selfsigned.crt \
+    -subj "/C=CL/O=DevSecOps/CN=localhost" >/dev/null 2>&1
+fi
+chown 101:101 nginx/ssl/nginx-selfsigned.key nginx/ssl/nginx-selfsigned.crt
+chmod 600 nginx/ssl/nginx-selfsigned.key
+chmod 644 nginx/ssl/nginx-selfsigned.crt
+
+docker compose --env-file .env config --quiet
+docker compose --env-file .env up -d --build
+
+echo
+echo "Servicios iniciados. Revise el estado con:"
+echo "  docker compose --env-file .env ps"
+echo "Acceso:"
+echo "  http://localhost:18080"
+echo "  https://localhost:18443"

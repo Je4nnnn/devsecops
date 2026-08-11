@@ -276,8 +276,11 @@ def _flush_detections(db, rows: list) -> None:
 # ---------------------------------------------------------------------------
 # Proceso principal
 # ---------------------------------------------------------------------------
-def process_wazuh_vulnerabilities(db, conn_id: int, raw_vulns: list, progress_cb=None) -> int:
-    """Sincroniza el payload de Wazuh contra el modelo y devuelve nº procesado."""
+def process_wazuh_vulnerabilities(db, conn_id: int, raw_vulns, progress_cb=None) -> int:
+    """Sincroniza una colección o flujo ``Sized`` de Wazuh.
+
+    La ingesta consume el iterable una sola vez y devuelve el número procesado.
+    """
     conn = db.get(WazuhConnection, conn_id)
     if conn is None:
         raise ValueError("Conexión no encontrada")
