@@ -456,7 +456,8 @@ def _run_sync_job(job_id: str, conn_ids: List[int], db=None) -> None:
                     )
 
                 count = process_wazuh_vulnerabilities(
-                    db, conn.id, raw_vulns, progress_cb=_cb
+                    db, conn.id, raw_vulns, progress_cb=_cb,
+                    agent_groups=getattr(raw_vulns, "agent_groups", None),
                 )
                 db.commit()
                 total_synced += count

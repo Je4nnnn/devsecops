@@ -39,28 +39,28 @@ describe('TimelineFilters.vue', () => {
     expect(wrapper.emitted('update:selectedConnection')[0]).toEqual([1])
   })
 
-  it('renders the "Desde" month input bound to startDate', () => {
+  it('renders the "Desde" month selector bound to startDate', () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    const monthInput = wrapper.find('input[type="month"]')
-    expect(monthInput.exists()).toBe(true)
-    expect(monthInput.element.value).toBe('2026-03')
+    const monthSelect = wrapper.find('[data-testid="start-month"]')
+    expect(monthSelect.exists()).toBe(true)
+    expect(monthSelect.element.value).toBe('2026-03')
   })
 
   it('emits the first day when the start month changes', async () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    const monthInput = wrapper.find('input[type="month"]')
-    await monthInput.setValue('2026-04')
+    const monthSelect = wrapper.find('[data-testid="start-month"]')
+    await monthSelect.setValue('2026-04')
     expect(wrapper.emitted('update:startDate')).toBeTruthy()
     expect(wrapper.emitted('update:startDate')[0]).toEqual(['2026-04-01'])
   })
 
   it('renders the end month and emits its last calendar day', async () => {
     const wrapper = mount(TimelineFilters, { props: defaultProps })
-    const monthInputs = wrapper.findAll('input[type="month"]')
-    expect(monthInputs).toHaveLength(2)
-    expect(monthInputs[1].element.value).toBe('2026-03')
+    const endMonth = wrapper.find('[data-testid="end-month"]')
+    expect(endMonth.exists()).toBe(true)
+    expect(endMonth.element.value).toBe('2026-03')
 
-    await monthInputs[1].setValue('2026-04')
+    await endMonth.setValue('2026-04')
     expect(wrapper.emitted('update:endDate')).toBeTruthy()
     expect(wrapper.emitted('update:endDate')[0]).toEqual(['2026-04-30'])
   })

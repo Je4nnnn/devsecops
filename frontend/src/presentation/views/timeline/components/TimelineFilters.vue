@@ -119,12 +119,20 @@
 
       <div class="f-group">
         <label>Desde</label>
-        <input type="month" v-model="startMonthModel" class="filter-input">
+        <select v-model="startMonthModel" class="filter-input" data-testid="start-month">
+          <option v-for="month in monthOptions" :key="month.value" :value="month.value">
+            {{ month.label }}
+          </option>
+        </select>
       </div>
 
       <div class="f-group">
         <label>Hasta</label>
-        <input type="month" v-model="endMonthModel" :min="startMonthModel" class="filter-input">
+        <select v-model="endMonthModel" class="filter-input" data-testid="end-month">
+          <option v-for="month in endMonthOptions" :key="month.value" :value="month.value">
+            {{ month.label }}
+          </option>
+        </select>
       </div>
 
       <div class="f-group f-action">
@@ -188,22 +196,51 @@ const selectedVulnsModel = computed({
   set: value => emit('update:selectedVulns', value)
 })
 
+const monthEndDate = value => {
+  const [year, month] = value.split('-').map(Number)
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return `${value}-${String(lastDay).padStart(2, '0')}`
+}
+
 // Desde = primer día del mes elegido.
 const startMonthModel = computed({
   get: () => (props.startDate || '').slice(0, 7),
-  set: value => emit('update:startDate', value ? `${value}-01` : '')
+  set: value => {
+    emit('update:startDate', value ? `${value}-01` : '')
+    if (value && endMonthModel.value && endMonthModel.value < value) {
+      emit('update:endDate', monthEndDate(value))
+    }
+  }
 })
 
 // Hasta = último día del mes elegido.
 const endMonthModel = computed({
   get: () => (props.endDate || '').slice(0, 7),
-  set: value => {
-    if (!value) return emit('update:endDate', '')
-    const [y, m] = value.split('-').map(Number)
-    const lastDay = new Date(y, m, 0).getDate()
-    emit('update:endDate', `${value}-${String(lastDay).padStart(2, '0')}`)
-  }
+  set: value => emit('update:endDate', value ? monthEndDate(value) : '')
 })
+
+// Selectores explícitos: input[type=month] no es consistente entre navegadores.
+const monthOptions = computed(() => {
+  const options = []
+  const now = new Date()
+  for (let offset = 0; offset < 120; offset += 1) {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1))
+    const value = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+    options.push({
+      value,
+      label: date.toLocaleDateString('es-CL', {
+        month: 'long',
+        year: 'numeric',
+        timeZone: 'UTC'
+      })
+    })
+  }
+  return options
+})
+
+const endMonthOptions = computed(() =>
+  monthOptions.value.filter(month => !startMonthModel.value || month.value >= startMonthModel.value)
+)
 
 const selectedSeveritiesModel = computed({
   get: () => props.selectedSeverities,

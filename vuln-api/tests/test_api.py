@@ -505,6 +505,25 @@ def test_sync_creates_star_schema_entities(mock_fetch, client, db_session):
 
 
 @patch("app.main.fetch_all_vulns")
+def test_sync_enriches_groups_from_monitoring(mock_fetch, client, db_session):
+    class MonitoringStream(list):
+        agent_groups = {"001": ["deportes", "linux"]}
+
+    document = _raw_vuln(groups=())[0]
+    mock_fetch.return_value = MonitoringStream([document])
+    _create_user(db_session)
+    conn = _create_connection(db_session)
+
+    client.post(
+        f"/wazuh-connections/{conn.id}/sync", headers=_get_headers(client)
+    )
+
+    groups = db_session.query(AgentGroup).order_by(AgentGroup.name).all()
+    assert [group.name for group in groups] == ["deportes", "linux"]
+    assert db_session.query(AssetGroupMember).count() == 2
+
+
+@patch("app.main.fetch_all_vulns")
 def test_dimensions_are_not_duplicated_across_agents(mock_fetch, client, db_session):
     """Dos agentes con el mismo paquete/SO/CVE comparten una sola fila dimensión."""
     mock_fetch.return_value = (

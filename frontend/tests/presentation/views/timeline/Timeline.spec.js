@@ -52,7 +52,12 @@ describe('Timeline.vue', () => {
       ]
     })
     vulnService.getFilterOptions.mockResolvedValue({
-      data: { agents: ['srv-01', 'srv-02'], cves: ['CVE-2023-1234'], severities: ['CRITICAL', 'HIGH'] }
+      data: {
+        agents: ['srv-01', 'srv-02'], cves: ['CVE-2023-1234'],
+        severities: ['CRITICAL', 'HIGH'],
+        groups: [{ id: 1, name: 'default' }],
+        operating_systems: [{ id: 1, platform: 'ubuntu', version: '24.04' }]
+      }
     })
     vulnService.getThreatSpans.mockResolvedValue(threatResponse)
     vulnService.getVulnHistory.mockResolvedValue({
@@ -73,6 +78,16 @@ describe('Timeline.vue', () => {
     expect(wazuhService.getConnections).toHaveBeenCalled()
   })
 
+
+  it('loads global filter options on mount', async () => {
+    const wrapper = mount(Timeline)
+    await flushPromises()
+
+    expect(vulnService.getFilterOptions).toHaveBeenCalledWith('')
+    expect(wrapper.vm.agentOpts).toEqual(['srv-01', 'srv-02'])
+    expect(wrapper.vm.groupOpts).toEqual([{ id: 1, name: 'default' }])
+    expect(wrapper.vm.osOpts).toEqual([{ id: 1, platform: 'ubuntu', version: '24.04' }])
+  })
   it('displays the empty card initially', () => {
     const wrapper = mount(Timeline)
     expect(wrapper.find('.empty-card').exists()).toBe(true)

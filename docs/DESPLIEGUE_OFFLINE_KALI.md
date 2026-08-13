@@ -54,14 +54,14 @@ git status
 docker version
 docker compose version
 
-./scripts/create-offline-bundle.sh entrega3-portable-v1
+./scripts/create-offline-bundle.sh entrega3-portable-v4
 ```
 
 El build descarga las dependencias únicamente en este equipo. Al finalizar se generan:
 
 ```text
-offline-dist/devsecops-entrega3-portable-v1.tar.gz
-offline-dist/devsecops-entrega3-portable-v1.tar.gz.sha256
+offline-dist/devsecops-entrega3-portable-v4.tar.gz
+offline-dist/devsecops-entrega3-portable-v4.tar.gz.sha256
 ```
 
 Conserve ambos archivos. El checksum permite detectar una copia incompleta o alterada.
@@ -69,7 +69,7 @@ Conserve ambos archivos. El checksum permite detectar una copia incompleta o alt
 ### Prueba recomendada antes de transportar
 
 ```bash
-sha256sum -c offline-dist/devsecops-entrega3-portable-v1.tar.gz.sha256
+sha256sum -c offline-dist/devsecops-entrega3-portable-v4.tar.gz.sha256
 ```
 
 Si el equipo de preparación no tiene la misma arquitectura que Kali, genere el paquete en otra máquina/VM Linux de la arquitectura correcta. El instalador compara `PLATFORM` con el equipo destino y no permite mezclar `amd64` con `arm64`.
@@ -99,9 +99,9 @@ Copie el `.tar.gz` y su `.sha256` por USB, SCP o el medio autorizado. En Kali:
 mkdir -p ~/entrega3
 cd ~/entrega3
 
-sha256sum -c devsecops-entrega3-portable-v1.tar.gz.sha256
-tar -xzf devsecops-entrega3-portable-v1.tar.gz
-cd devsecops-entrega3-portable-v1
+sha256sum -c devsecops-entrega3-portable-v4.tar.gz.sha256
+tar -xzf devsecops-entrega3-portable-v4.tar.gz
+cd devsecops-entrega3-portable-v4
 ```
 
 El checksum debe responder `OK`. No continúe si falla.
@@ -293,7 +293,7 @@ No ejecute `down -v` durante una prueba normal. Esa opción elimina el volumen y
 Genere un paquete con una versión nueva:
 
 ```bash
-./scripts/create-offline-bundle.sh entrega3-portable-v2
+./scripts/create-offline-bundle.sh entrega3-portable-v5
 ```
 
 Respalde la base en Kali antes de actualizar. Cada paquete mantiene su propio `.env`; no copie claves Fernet entre instalaciones sin considerar que las contraseñas Wazuh ya almacenadas fueron cifradas con esa clave.

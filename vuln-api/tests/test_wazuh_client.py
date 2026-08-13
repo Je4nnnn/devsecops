@@ -68,3 +68,27 @@ def test_stream_pages_without_accumulating_all_documents(monkeypatch):
 def test_tls_verification_configuration(monkeypatch, configured, expected):
     monkeypatch.setenv("WAZUH_VERIFY_TLS", configured)
     assert wazuh_client._tls_verification() == expected
+
+
+def test_fetch_agent_groups_uses_latest_monitoring_record(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse({
+            "hits": {"hits": [
+                {"_source": {"id": "010", "name": "kali", "group": ["default"]}},
+                {"_source": {"id": "013", "name": "ubuntu", "group": "deportes, web"}},
+            ]}
+        })
+
+    monkeypatch.setattr(wazuh_client.requests, "post", fake_post)
+    result = wazuh_client.fetch_agent_groups(
+        "https://indexer.local/wazuh-monitoring-*/_search",
+        {"Authorization": "Basic test"},
+    )
+
+    assert result == {"010": ["default"], "013": ["deportes", "web"]}
+    request = calls[0][1]["json"]
+    assert request["collapse"] == {"field": "id"}
+    assert request["sort"][0]["timestamp"]["order"] == "desc"

@@ -17,7 +17,7 @@ La guía completa se encuentra en:
 Para generar el paquete transportable:
 
 ```bash
-./scripts/create-offline-bundle.sh entrega3-portable-v1
+./scripts/create-offline-bundle.sh entrega3-portable-v4
 ```
 
 El resultado queda en `offline-dist/` e incluye las imágenes de base, API y frontend, checksums, instalador, prueba de humo y utilidades de respaldo.
@@ -54,7 +54,7 @@ Backend mediante la etapa de test del contenedor:
 
 ```bash
 docker build --target test -t devsecops-api-test ./vuln-api
-docker run --rm devsecops-api-test
+docker run --rm -e PYTHONPATH=/app devsecops-api-test
 ```
 
 Stack completo:

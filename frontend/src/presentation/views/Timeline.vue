@@ -59,7 +59,7 @@
       <div v-if="loading" class="empty-center"><p>Escaneando historial...</p></div>
       <div v-else class="empty-center">
         <h3>Sin datos para mostrar</h3>
-        <p>Selecciona una conexión y una fecha de inicio, luego presiona "Generar Vista".</p>
+        <p>Selecciona un periodo y luego presiona "Generar Vista".</p>
       </div>
     </div>
 
@@ -188,6 +188,7 @@ onMounted(async () => {
   try {
     const response = await wazuhService.getConnections()
     connections.value = Array.isArray(response.data) ? response.data : []
+    await onConnectionChange()
   } catch (error) {
     console.error(error)
     errorBanner.value = 'No se pudieron cargar las conexiones Wazuh.'

@@ -276,7 +276,9 @@ def _flush_detections(db, rows: list) -> None:
 # ---------------------------------------------------------------------------
 # Proceso principal
 # ---------------------------------------------------------------------------
-def process_wazuh_vulnerabilities(db, conn_id: int, raw_vulns, progress_cb=None) -> int:
+def process_wazuh_vulnerabilities(
+    db, conn_id: int, raw_vulns, progress_cb=None, agent_groups=None
+) -> int:
     """Sincroniza una colección o flujo ``Sized`` de Wazuh.
 
     La ingesta consume el iterable una sola vez y devuelve el número procesado.
@@ -367,6 +369,8 @@ def process_wazuh_vulnerabilities(db, conn_id: int, raw_vulns, progress_cb=None)
         count += 1
 
     _resolve_missing(db, cache, seen_finding_keys, scan_ts, detections)
+    if agent_groups is not None:
+        _replace_agent_groups(db, cache, agent_groups)
     _flush_detections(db, detections)
 
     if progress_cb:
@@ -374,6 +378,33 @@ def process_wazuh_vulnerabilities(db, conn_id: int, raw_vulns, progress_cb=None)
 
     conn.last_sync_at = scan_ts
     return count
+
+
+def _replace_agent_groups(db, cache, agent_groups: dict) -> None:
+    """Reemplaza membresías con el estado actual de ``wazuh-monitoring-*``."""
+    asset_ids = [asset.id for asset in cache.assets.values()]
+    if asset_ids:
+        db.query(AssetGroupMember).filter(
+            AssetGroupMember.asset_id.in_(asset_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(AgentGroup).filter(
+        AgentGroup.connection_id == cache.connection_id
+    ).delete(synchronize_session=False)
+    db.flush()
+
+    cache.groups = {}
+    cache.memberships = set()
+    for agent_id, raw_names in agent_groups.items():
+        asset = cache.assets.get(str(agent_id))
+        if asset is None:
+            continue
+        if isinstance(raw_names, str):
+            raw_names = raw_names.split(",")
+        names = sorted(
+            {str(name).strip() for name in (raw_names or []) if str(name).strip()}
+        )
+        cache.link_groups(asset, names)
 
 
 def _resolve_missing(db, cache, seen_keys, scan_ts, detections) -> None:
