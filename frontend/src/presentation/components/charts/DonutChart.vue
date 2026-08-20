@@ -86,13 +86,13 @@ const arcs = computed(() => {
 .donut-chart {
   display: flex;
   align-items: center;
-  gap: 1.1rem;
+  gap: var(--donut-gap, 1.1rem);
   flex-wrap: wrap;
 }
 
 .donut-svg {
-  width: 140px;
-  height: 140px;
+  width: var(--donut-size, 140px);
+  height: var(--donut-size, 140px);
   flex-shrink: 0;
 }
 
