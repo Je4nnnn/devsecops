@@ -1138,14 +1138,10 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.coverage-pair :deep(.donut-chart) {
+.coverage-pair .donut-chart {
   flex: 1 1 140px;
-  gap: 0.6rem;
-}
-
-.coverage-pair :deep(.donut-svg) {
-  width: 108px;
-  height: 108px;
+  --donut-gap: 0.6rem;
+  --donut-size: 108px;
 }
 
 .mini-select {
