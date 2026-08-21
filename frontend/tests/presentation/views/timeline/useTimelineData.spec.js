@@ -74,11 +74,13 @@ describe('useTimelineData', () => {
     expect(tl.counts.value.resolved).toBe(1)
   })
 
-  it('does nothing without a selected connection', async () => {
+  it('builds across all servers when no connection is selected (omits connection_id)', async () => {
+    vulnService.getThreatSpans.mockResolvedValueOnce(makeResponse())
     const tl = useTimelineData({ ...props, selectedConnection: ref('') })
     await tl.build()
-    expect(tl.hasBuilt.value).toBe(false)
-    expect(vulnService.getThreatSpans).not.toHaveBeenCalled()
+    expect(tl.hasBuilt.value).toBe(true)
+    expect(vulnService.getThreatSpans).toHaveBeenCalledTimes(1)
+    expect(vulnService.getThreatSpans.mock.calls[0][0]).not.toHaveProperty('connection_id')
   })
 
   it('clamps bar geometry to the visible range', async () => {

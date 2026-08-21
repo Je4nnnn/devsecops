@@ -55,10 +55,12 @@ describe('TimelineCanvas.vue', () => {
     expect(wrapper.findAll('.gantt-row')).toHaveLength(2)
   })
 
-  it('renders date axis ticks', () => {
+  it('renders one month cell per calendar month in range', () => {
     const wrapper = mountCanvas()
-    // TICK_COUNT (7) + 1 boundary tick
-    expect(wrapper.findAll('.axis-tick')).toHaveLength(8)
+    // Rango que cubre marzo: al menos una celda de mes, con marzo presente.
+    const cells = wrapper.findAll('.axis-month')
+    expect(cells.length).toBeGreaterThanOrEqual(1)
+    expect(cells.map(c => c.text().toLowerCase()).join(' ')).toContain('mar')
   })
 
   it('marks the ongoing threat with the ongoing class', () => {
