@@ -78,8 +78,10 @@ sed \
   -e "s|^API_IMAGE=.*|API_IMAGE=${API_IMAGE}|" \
   -e "s|^FRONTEND_IMAGE=.*|FRONTEND_IMAGE=${FRONTEND_IMAGE}|" \
   "${PROJECT_DIR}/.env.example" > "${WORK_DIR}/.env.example"
+mkdir -p "${WORK_DIR}/nginx"
 
 cp "${PROJECT_DIR}/docker-compose.offline.yml" "${WORK_DIR}/"
+cp "${PROJECT_DIR}/frontend/nginx-https.conf" "${WORK_DIR}/nginx/"
 cp "${PROJECT_DIR}/scripts/deploy-kali-offline.sh" "${WORK_DIR}/deploy.sh"
 cp "${PROJECT_DIR}/scripts/smoke-test.sh" "${WORK_DIR}/smoke-test.sh"
 cp "${PROJECT_DIR}/scripts/backup-database.sh" "${WORK_DIR}/backup-database.sh"

@@ -4,12 +4,13 @@ set -Eeuo pipefail
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "${PROJECT_DIR}"
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "ERROR: ejecute sudo ./iniciar_app.sh para preparar permisos TLS y Docker." >&2
+MODE="${1:---pull}"
+if [ "${MODE}" != "--pull" ] && [ "${MODE}" != "--build" ]; then
+  echo "Uso: ./iniciar_app.sh [--pull|--build]" >&2
   exit 2
 fi
 
-for command_name in docker openssl; do
+for command_name in docker openssl sed; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: falta el comando ${command_name}." >&2
     exit 2
@@ -23,14 +24,24 @@ fi
 
 if [ ! -f .env ]; then
   cp .env.example .env
+  postgres_password="$(openssl rand -hex 24)"
+  admin_password="$(openssl rand -base64 18 | tr -d '\n' | tr '/+' '_-')"
+  jwt_secret="$(openssl rand -hex 48)"
+  encryption_key="$(openssl rand -base64 32 | tr '/+' '_-' | tr -d '\n')"
+  sed -i \
+    -e "s|REEMPLAZAR_POSTGRES_PASSWORD|${postgres_password}|" \
+    -e "s|REEMPLAZAR_ADMIN_PASSWORD|${admin_password}|" \
+    -e "s|REEMPLAZAR_JWT_SECRET|${jwt_secret}|" \
+    -e "s|REEMPLAZAR_ENCRYPTION_KEY|${encryption_key}|" .env
   chmod 600 .env
-  echo "Se creo .env desde la plantilla." >&2
-  echo "Reemplace todos los valores REEMPLAZAR_* y vuelva a ejecutar el script." >&2
-  exit 2
+  echo "Se creo .env con secretos aleatorios."
+  echo "Usuario inicial: admin"
+  echo "Contrasena inicial: ${admin_password}"
+  echo "Guardela ahora; no se volvera a mostrar."
 fi
 
 if grep -q 'REEMPLAZAR_' .env; then
-  echo "ERROR: .env contiene secretos sin configurar (REEMPLAZAR_*)." >&2
+  echo "ERROR: .env contiene valores REEMPLAZAR_*; elimine .env para regenerarlo o complete los valores." >&2
   exit 2
 fi
 
@@ -42,16 +53,21 @@ if [ ! -s nginx/ssl/nginx-selfsigned.key ] || [ ! -s nginx/ssl/nginx-selfsigned.
     -out nginx/ssl/nginx-selfsigned.crt \
     -subj "/C=CL/O=DevSecOps/CN=localhost" >/dev/null 2>&1
 fi
-chown 101:101 nginx/ssl/nginx-selfsigned.key nginx/ssl/nginx-selfsigned.crt
-chmod 600 nginx/ssl/nginx-selfsigned.key
-chmod 644 nginx/ssl/nginx-selfsigned.crt
+chmod 644 nginx/ssl/nginx-selfsigned.key nginx/ssl/nginx-selfsigned.crt
 
-docker compose --env-file .env config --quiet
-docker compose --env-file .env up -d --build
+compose=(docker compose --env-file .env -f docker-compose.yml -f docker-compose.tls.yml)
+"${compose[@]}" config --quiet
+
+if [ "${MODE}" = "--build" ]; then
+  APP_PULL_POLICY=build "${compose[@]}" up -d --build
+else
+  "${compose[@]}" pull
+  "${compose[@]}" up -d --no-build
+fi
 
 echo
 echo "Servicios iniciados. Revise el estado con:"
-echo "  docker compose --env-file .env ps"
+echo "  docker compose --env-file .env -f docker-compose.yml -f docker-compose.tls.yml ps"
 echo "Acceso:"
 echo "  http://localhost:18080"
 echo "  https://localhost:18443"

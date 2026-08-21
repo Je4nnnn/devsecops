@@ -1,16 +1,35 @@
 name: ${COMPOSE_PROJECT_NAME:-vuln-app-wazuh}
 
+# Valores seguros para una prueba local sin archivo .env. Los scripts reemplazan
+# estos valores por secretos aleatorios antes de exponer la aplicacion en una LAN.
+x-api-environment: &api-environment
+  APP_VERSION: "${APP_VERSION:-entrega3-portable-v6}"
+  APP_ENV: "${APP_ENV:-development}"
+  POSTGRES_DB: "${POSTGRES_DB:-vulnerabilidades_db}"
+  POSTGRES_USER: "${POSTGRES_USER:-vuln_app}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-local_only_postgres_change_me}"
+  DB_POOL_SIZE: "${DB_POOL_SIZE:-5}"
+  DB_MAX_OVERFLOW: "${DB_MAX_OVERFLOW:-10}"
+  DB_POOL_TIMEOUT: "${DB_POOL_TIMEOUT:-30}"
+  INITIAL_ADMIN_USERNAME: "${INITIAL_ADMIN_USERNAME:-admin}"
+  INITIAL_ADMIN_PASSWORD: "${INITIAL_ADMIN_PASSWORD:-Admin1234!}"
+  JWT_SECRET: "${JWT_SECRET:-local-only-jwt-secret-change-before-lan-use}"
+  ENCRYPTION_KEY: "${ENCRYPTION_KEY:-t9fBVh3ZtIhZmDjWvN7kiPRihGD-1MAx6xVhmL0UuEo=}"
+  CORS_ORIGINS: "${CORS_ORIGINS:-}"
+  WAZUH_VERIFY_TLS: "${WAZUH_VERIFY_TLS:-false}"
+  WAZUH_BATCH_SIZE: "${WAZUH_BATCH_SIZE:-2000}"
+  WAZUH_REQUEST_TIMEOUT: "${WAZUH_REQUEST_TIMEOUT:-120}"
+
 services:
   db-api:
     image: ${DB_IMAGE:-timescale/timescaledb@sha256:867dc9cbb3232dece516122d49e56ce472754fe31cbffb54d64920f8d2ed79b6}
+    pull_policy: missing
     command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:?Defina POSTGRES_DB en .env}
-      POSTGRES_USER: ${POSTGRES_USER:?Defina POSTGRES_USER en .env}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-vulnerabilidades_db}
+      POSTGRES_USER: ${POSTGRES_USER:-vuln_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_only_postgres_change_me}
     volumes:
       - postgres_api_data:/var/lib/postgresql/data
     networks:
@@ -27,11 +46,13 @@ services:
         max-file: "3"
 
   api:
-    image: ${API_IMAGE:-devsecops-api:entrega3-portable}
+    image: ${API_IMAGE:-matiassandovalp/devsecops-api:entrega3-portable-v6}
+    pull_policy: ${APP_PULL_POLICY:-missing}
     build:
       context: ./vuln-api
       target: production
     environment:
+      <<: *api-environment
       DATABASE_HOST: db-api
       DATABASE_PORT: "5432"
       DATABASE_URL: ""
@@ -41,8 +62,6 @@ services:
     networks:
       - app-network
     restart: unless-stopped
-    env_file:
-      - .env
     read_only: true
     tmpfs:
       - /tmp
@@ -60,18 +79,14 @@ services:
         max-file: "3"
 
   frontend:
-    image: ${FRONTEND_IMAGE:-devsecops-frontend:entrega3-portable}
+    image: ${FRONTEND_IMAGE:-matiassandovalp/devsecops-frontend:entrega3-portable-v6}
+    pull_policy: ${APP_PULL_POLICY:-missing}
     build:
       context: ./frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-/api}
-    env_file:
-      - .env
     ports:
-      - "${BIND_ADDRESS:-0.0.0.0}:${FRONTEND_HTTP_PORT:-18080}:80"
-      - "${BIND_ADDRESS:-0.0.0.0}:${FRONTEND_HTTPS_PORT:-18443}:443"
-    volumes:
-      - ${TLS_CERT_DIR:-./nginx/ssl}:/etc/nginx/ssl:ro
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_HTTP_PORT:-18080}:80"
     depends_on:
       api:
         condition: service_healthy
