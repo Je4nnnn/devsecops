@@ -11,22 +11,21 @@ Este Jenkinsfile valida el proyecto sin modificar la logica de la aplicacion. El
 7. `GATE: Trivy Containers`: falla por vulnerabilidades `CRITICAL,HIGH` corregibles en imagen backend/frontend.
 8. `GATE: OWASP ZAP`: falla por alertas ZAP de riesgo `High`.
 
-## Puesta en marcha manual
+## Puesta en marcha
 
-Desde la raiz del proyecto:
+Desde la raíz del proyecto:
 
 ```bash
-docker network create sonarqube_sonar-network 2>/dev/null || true
-cd dev-tools/jenkins
-docker compose up -d --build
+docker compose up -d
 ```
 
-En Jenkins:
+El Compose raíz levanta aplicación, SonarQube y Jenkins. El inicializador genera el token `sonar-token`, Jenkins registra la instalación `sonarqube` y crea el job `devsecops-pipeline` apuntando a `codex/entrega3-portable-qa`.
 
-1. Abrir `http://localhost:8080`.
-2. Crear o verificar la credencial secreta `sonar-token` en `Manage Jenkins > Credentials`.
-3. Verificar que la instalacion de SonarQube se llame `sonarqube` en `Manage Jenkins > System`, porque el Jenkinsfile usa `withSonarQubeEnv('sonarqube')`.
-4. Ejecutar el job que apunta a este repositorio.
+1. Abra `http://localhost:8080`.
+2. Ingrese como `admin` con la contraseña de `.env` o la credencial local documentada.
+3. Abra `devsecops-pipeline` y presione **Build Now**.
+
+Jenkins monta `/var/run/docker.sock`. Esto le permite ejecutar los stages Docker, pero también le entrega control administrativo sobre el daemon y sus volúmenes. Use este entorno solo para desarrollo controlado.
 
 ## Ajustes de gates
 

@@ -1,9 +1,9 @@
 name: ${COMPOSE_PROJECT_NAME:-vuln-app-wazuh}
 
-# Valores seguros para una prueba local sin archivo .env. Los scripts reemplazan
-# estos valores por secretos aleatorios antes de exponer la aplicacion en una LAN.
+# Valores de demostracion para un arranque local sin .env. Los scripts generan
+# secretos aleatorios antes de exponer el stack en una LAN.
 x-api-environment: &api-environment
-  APP_VERSION: "${APP_VERSION:-entrega3-portable-v6}"
+  APP_VERSION: "${APP_VERSION:-entrega3-portable-v7}"
   APP_ENV: "${APP_ENV:-development}"
   POSTGRES_DB: "${POSTGRES_DB:-vulnerabilidades_db}"
   POSTGRES_USER: "${POSTGRES_USER:-vuln_app}"
@@ -111,9 +111,183 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  db-sonar:
+    image: ${SONAR_DB_IMAGE:-postgres:15}
+    pull_policy: missing
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD:-local_only_sonar_db_change_me}
+      POSTGRES_DB: sonarqube
+    volumes:
+      - postgres_sonar_data:/var/lib/postgresql/data
+    networks:
+      - sonar-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar -d sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sonarqube:
+    image: ${SONAR_IMAGE:-sonarqube:9.9-community}
+    pull_policy: missing
+    restart: unless-stopped
+    depends_on:
+      db-sonar:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://db-sonar:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:-local_only_sonar_db_change_me}
+      SONAR_WEB_JAVAOPTS: -Xms128m -Xmx256m
+      SONAR_CE_JAVAOPTS: -Xms128m -Xmx256m
+      SONAR_SEARCH_JAVAOPTS: -Xms256m -Xmx256m
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SONAR_PORT:-9000}:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - sonar-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-proxy -qO- http://127.0.0.1:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sonar-init:
+    image: curlimages/curl:8.12.1
+    pull_policy: missing
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      sonarqube:
+        condition: service_healthy
+    environment:
+      SONAR_ADMIN_PASSWORD: ${SONAR_ADMIN_PASSWORD:-AdminSonar123!}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        token_file=/bootstrap/token
+        if [ -s "$${token_file}" ]; then
+          existing_token="$$(cat "$${token_file}")"
+          if curl -fsS -u "$${existing_token}:" http://sonarqube:9000/api/authentication/validate | grep -q '"valid":true'; then
+            exit 0
+          fi
+          rm -f "$${token_file}"
+        fi
+
+        desired_password="$${SONAR_ADMIN_PASSWORD}"
+        if curl -fsS -u "admin:$${desired_password}" http://sonarqube:9000/api/authentication/validate | grep -q '"valid":true'; then
+          current_password="$${desired_password}"
+        elif curl -fsS -u "admin:admin" http://sonarqube:9000/api/authentication/validate | grep -q '"valid":true'; then
+          current_password=admin
+        else
+          echo "ERROR: no fue posible autenticar el administrador de SonarQube." >&2
+          exit 1
+        fi
+
+        curl -sS -u "admin:$${current_password}" -X POST \
+          --data-urlencode "name=devsecops-jenkins" \
+          http://sonarqube:9000/api/user_tokens/revoke >/dev/null || true
+        response="$$(curl -fsS -u "admin:$${current_password}" -X POST \
+          --data-urlencode "name=devsecops-jenkins" \
+          http://sonarqube:9000/api/user_tokens/generate)"
+        token="$$(printf '%s' "$${response}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+        if [ -z "$${token}" ]; then
+          echo "ERROR: SonarQube no devolvio un token valido." >&2
+          exit 1
+        fi
+
+        umask 077
+        printf '%s' "$${token}" > "$${token_file}"
+        if [ "$${current_password}" = "admin" ] && [ "$${desired_password}" != "admin" ]; then
+          curl -fsS -u "admin:admin" -X POST \
+            --data-urlencode "login=admin" \
+            --data-urlencode "previousPassword=admin" \
+            --data-urlencode "password=$${desired_password}" \
+            http://sonarqube:9000/api/users/change_password >/dev/null
+        fi
+    volumes:
+      - sonar_bootstrap:/bootstrap
+    networks:
+      - sonar-network
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  jenkins:
+    image: ${JENKINS_IMAGE:-matiassandovalp/devsecops-jenkins:entrega3-portable-v7}
+    pull_policy: ${APP_PULL_POLICY:-missing}
+    build:
+      context: ./dev-tools/jenkins
+    container_name: ${JENKINS_CONTAINER_NAME:-jenkins}
+    user: root
+    restart: unless-stopped
+    depends_on:
+      sonar-init:
+        condition: service_completed_successfully
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${JENKINS_PORT:-8080}:8080"
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - sonar_bootstrap:/run/sonar:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      JAVA_OPTS: -Xmx512m -Xms128m -XX:+UseG1GC -XX:+ExplicitGCInvokesConcurrent -XX:+ParallelRefProcEnabled -XX:+UseStringDeduplication -Djenkins.install.runSetupWizard=false
+      JENKINS_ADMIN_ID: ${JENKINS_ADMIN_ID:-admin}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:-AdminJenkins123!}
+      SONAR_TOKEN_FILE: /run/sonar/token
+      SONAR_TOKEN_CREDENTIAL_ID: sonar-token
+      SONAR_NETWORK_NAME: ${SONAR_NETWORK_NAME:-vuln-app-wazuh_sonar-network}
+      CI_SONAR_NETWORK: ${SONAR_NETWORK_NAME:-vuln-app-wazuh_sonar-network}
+      PIPELINE_JOB_NAME: devsecops-pipeline
+      PIPELINE_GIT_URL: ${PIPELINE_GIT_URL:-https://github.com/Je4nnnn/devsecops}
+      PIPELINE_GIT_BRANCH: ${PIPELINE_GIT_BRANCH:-*/codex/entrega3-portable-qa}
+      PIPELINE_SCRIPT_PATH: dev-tools/jenkins/Jenkinsfile
+    networks:
+      - app-network
+      - sonar-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/login >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   postgres_api_data:
+  postgres_sonar_data:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  sonar_bootstrap:
+  jenkins_data:
 
 networks:
   app-network:
+    driver: bridge
+  sonar-network:
+    name: ${SONAR_NETWORK_NAME:-vuln-app-wazuh_sonar-network}
     driver: bridge

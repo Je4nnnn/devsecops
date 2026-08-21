@@ -71,12 +71,18 @@ if [ ! -f .env ]; then
   INITIAL_ADMIN_PASSWORD="$(openssl rand -hex 12)"
   JWT_SECRET="$(openssl rand -hex 32)"
   ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n')"
+  SONAR_DB_PASSWORD="$(openssl rand -hex 24)"
+  SONAR_ADMIN_PASSWORD="$(openssl rand -hex 12)"
+  JENKINS_ADMIN_PASSWORD="$(openssl rand -hex 12)"
 
   sed \
     -e "s/REEMPLAZAR_POSTGRES_PASSWORD/${POSTGRES_PASSWORD}/" \
     -e "s/REEMPLAZAR_ADMIN_PASSWORD/${INITIAL_ADMIN_PASSWORD}/" \
     -e "s/REEMPLAZAR_JWT_SECRET/${JWT_SECRET}/" \
     -e "s|REEMPLAZAR_ENCRYPTION_KEY|${ENCRYPTION_KEY}|" \
+    -e "s/REEMPLAZAR_SONAR_DB_PASSWORD/${SONAR_DB_PASSWORD}/" \
+    -e "s/REEMPLAZAR_SONAR_ADMIN_PASSWORD/${SONAR_ADMIN_PASSWORD}/" \
+    -e "s/REEMPLAZAR_JENKINS_ADMIN_PASSWORD/${JENKINS_ADMIN_PASSWORD}/" \
     .env.example > .env
   chmod 600 .env
 

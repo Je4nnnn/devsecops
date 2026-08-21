@@ -32,15 +32,47 @@ if ($LASTEXITCODE -ne 0) { throw "Se requiere Docker Compose v2." }
 if (-not (Test-Path ".env")) {
     $content = [IO.File]::ReadAllText((Join-Path $ProjectDir ".env.example"))
     $adminPassword = New-UrlSafeBase64 18
+    $jenkinsPassword = New-UrlSafeBase64 18
+    $sonarPassword = New-UrlSafeBase64 18
     $content = $content.Replace("REEMPLAZAR_POSTGRES_PASSWORD", (New-HexSecret 24))
     $content = $content.Replace("REEMPLAZAR_ADMIN_PASSWORD", $adminPassword)
     $content = $content.Replace("REEMPLAZAR_JWT_SECRET", (New-HexSecret 48))
     $content = $content.Replace("REEMPLAZAR_ENCRYPTION_KEY", (New-UrlSafeBase64 32))
+    $content = $content.Replace("REEMPLAZAR_SONAR_DB_PASSWORD", (New-HexSecret 24))
+    $content = $content.Replace("REEMPLAZAR_SONAR_ADMIN_PASSWORD", $sonarPassword)
+    $content = $content.Replace("REEMPLAZAR_JENKINS_ADMIN_PASSWORD", $jenkinsPassword)
     [IO.File]::WriteAllText((Join-Path $ProjectDir ".env"), $content, (New-Object Text.UTF8Encoding($false)))
     Write-Host "Se creo .env con secretos aleatorios."
     Write-Host "Usuario inicial: admin"
-    Write-Host "Contrasena inicial: $adminPassword"
-    Write-Host "Guardela ahora; no se volvera a mostrar."
+    Write-Host "Aplicacion admin: $adminPassword"
+    Write-Host "Jenkins admin: $jenkinsPassword"
+    Write-Host "SonarQube admin: $sonarPassword"
+    Write-Host "Guarde estas contrasenas ahora; no se volveran a mostrar."
+}
+
+$ciLines = New-Object System.Collections.Generic.List[string]
+$addedJenkinsPassword = $null
+$addedSonarPassword = $null
+if (-not (Select-String -Path ".env" -Pattern "^SONAR_DB_PASSWORD=" -Quiet)) {
+    $ciLines.Add("SONAR_DB_PASSWORD=$(New-HexSecret 24)")
+}
+if (-not (Select-String -Path ".env" -Pattern "^SONAR_ADMIN_PASSWORD=" -Quiet)) {
+    $addedSonarPassword = New-UrlSafeBase64 18
+    $ciLines.Add("SONAR_ADMIN_PASSWORD=$addedSonarPassword")
+}
+if (-not (Select-String -Path ".env" -Pattern "^JENKINS_ADMIN_ID=" -Quiet)) {
+    $ciLines.Add("JENKINS_ADMIN_ID=admin")
+}
+if (-not (Select-String -Path ".env" -Pattern "^JENKINS_ADMIN_PASSWORD=" -Quiet)) {
+    $addedJenkinsPassword = New-UrlSafeBase64 18
+    $ciLines.Add("JENKINS_ADMIN_PASSWORD=$addedJenkinsPassword")
+}
+if ($ciLines.Count -gt 0) {
+    [IO.File]::AppendAllText((Join-Path $ProjectDir ".env"), [Environment]::NewLine + ($ciLines -join [Environment]::NewLine) + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+    Write-Host "Se agregaron credenciales CI/CD al .env existente."
+    if ($addedJenkinsPassword) { Write-Host "Jenkins admin: $addedJenkinsPassword" }
+    if ($addedSonarPassword) { Write-Host "SonarQube admin: $addedSonarPassword" }
+    Write-Host "Guarde estas contrasenas ahora; no se volveran a mostrar."
 }
 
 if (Select-String -Path ".env" -Pattern "REEMPLAZAR_" -Quiet) {
@@ -79,4 +111,6 @@ if ($LASTEXITCODE -ne 0) { throw "No se pudo iniciar la aplicacion." }
 Write-Host ""
 Write-Host "Aplicacion disponible en http://localhost:18080"
 if ($EnableHttps) { Write-Host "HTTPS disponible en https://localhost:18443" }
+Write-Host "Jenkins disponible en http://localhost:8080"
+Write-Host "SonarQube disponible en http://localhost:9000"
 Write-Host "Estado: docker compose --env-file .env ps"

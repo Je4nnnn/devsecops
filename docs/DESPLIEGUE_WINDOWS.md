@@ -5,7 +5,7 @@
 - Windows 10 u 11 de 64 bits.
 - Docker Desktop iniciado, usando contenedores Linux.
 - Docker Compose v2, incluido en Docker Desktop.
-- Espacio libre para las imágenes y el volumen de PostgreSQL.
+- Al menos 6 GB de RAM asignados a Docker Desktop para ejecutar cómodamente aplicación, Jenkins, SonarQube y los análisis.
 
 No es necesario instalar PostgreSQL, Node.js, Python, Wazuh, Bash ni OpenSSL para el inicio normal.
 
@@ -18,12 +18,21 @@ docker compose up -d
 docker compose ps
 ```
 
-Abra `http://localhost:18080`. En un clon sin `.env`, el acceso local de demostración es:
+El mismo comando levanta todo el entorno:
 
-- Usuario: `admin`
-- Contraseña: `Admin1234!`
+- Aplicación: `http://localhost:18080` — `admin` / `Admin1234!`
+- Jenkins: `http://localhost:8080` — `admin` / `AdminJenkins123!`
+- SonarQube: `http://localhost:9000` — `admin` / `AdminSonar123!`
 
-Esta opción liga el puerto a `127.0.0.1`, por lo que solo responde en ese computador. Los valores incorporados son únicamente para una prueba local.
+Jenkins crea automáticamente el job `devsecops-pipeline` y recibe un token generado por SonarQube. Presione **Build Now** para ejecutar el pipeline. Los puertos quedan ligados a `127.0.0.1`; las credenciales incorporadas son solo para una prueba local.
+
+Si anteriormente levantó Jenkins o SonarQube por separado, libere una vez sus nombres y puertos sin borrar volúmenes:
+
+```powershell
+docker compose -f .\dev-tools\jenkins\docker-compose.yml down
+docker compose -f .\dev-tools\sonarqube\docker-compose.yml down
+docker compose up -d
+```
 
 ## Opción recomendada: secretos propios
 
@@ -33,7 +42,7 @@ Ejecute:
 powershell -ExecutionPolicy Bypass -File .\iniciar_app.ps1
 ```
 
-El script crea `.env` solo si no existe, genera secretos aleatorios, descarga las imágenes públicas y conserva el volumen entre reinicios. Anote la contraseña inicial que muestra una sola vez.
+El script crea o migra `.env`, genera secretos aleatorios para los tres accesos, descarga las imágenes públicas y conserva los volúmenes. Anote las contraseñas que muestra una sola vez.
 
 Para compilar las imágenes desde el código:
 
@@ -52,10 +61,12 @@ Accesos:
 - HTTP: `http://localhost:18080`
 - HTTPS opcional: `https://localhost:18443`
 - API: `http://localhost:18080/api/docs`
+- Jenkins: `http://localhost:8080`
+- SonarQube: `http://localhost:9000`
 
 ## Datos y reinicios
 
-La base no está dentro de la imagen. Docker la guarda en el volumen `vuln-app-wazuh_postgres_api_data`.
+La base de la aplicación permanece en `vuln-app-wazuh_postgres_api_data`. Jenkins y SonarQube usan volúmenes independientes.
 
 ```powershell
 docker compose stop
@@ -64,7 +75,7 @@ docker compose down
 docker compose up -d
 ```
 
-Esos comandos conservan los datos. `docker compose down -v` elimina el volumen y la base; no lo ejecute si debe conservar una sincronización.
+Esos comandos conservan los datos. `docker compose down -v` elimina la base sincronizada, la configuración de Jenkins, el token automático y los datos de SonarQube.
 
 ## Acceso desde otro computador de la LAN
 
@@ -83,6 +94,13 @@ docker compose ps
 docker compose logs --tail 200 api
 docker compose logs --tail 200 frontend
 docker compose logs --tail 200 db-api
+docker compose logs --tail 200 jenkins
+docker compose logs --tail 200 sonarqube
+docker compose logs --tail 200 sonar-init
 ```
 
 Si aparece `pull access denied`, confirme que Compose referencia `matiassandovalp/devsecops-api:entrega3-portable-v6` y `matiassandovalp/devsecops-frontend:entrega3-portable-v6`, y que Docker Desktop tiene Internet.
+
+## Seguridad del pipeline
+
+Jenkins monta `/var/run/docker.sock` para construir imágenes y ejecutar Trivy/ZAP. Esto le entrega control administrativo sobre Docker Desktop, incluidos sus contenedores y volúmenes. Use este stack únicamente en un computador de desarrollo controlado y limite quién puede modificar la rama o ejecutar jobs.

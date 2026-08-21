@@ -16,7 +16,23 @@ En un clon nuevo, con Docker Desktop o Docker Engine y Compose v2:
 docker compose up -d
 ```
 
-Esto descarga las imágenes públicas, crea PostgreSQL/TimescaleDB en un volumen local e inicia la aplicación en `http://localhost:18080`. No requiere `.env`, Bash ni OpenSSL. El acceso de demostración es `admin` / `Admin1234!` y el puerto queda ligado a `127.0.0.1`; use esta modalidad solo para una prueba local.
+Esto descarga las imágenes públicas y levanta en un solo stack la aplicación, PostgreSQL/TimescaleDB, SonarQube y Jenkins con el job `devsecops-pipeline` preconfigurado. No requiere `.env`, Bash ni OpenSSL.
+
+Accesos locales de demostración:
+
+- Aplicación: `http://localhost:18080` — `admin` / `Admin1234!`
+- Jenkins: `http://localhost:8080` — `admin` / `AdminJenkins123!`
+- SonarQube: `http://localhost:9000` — `admin` / `AdminSonar123!`
+
+Los puertos quedan ligados a `127.0.0.1`. Use estas credenciales únicamente para una prueba local.
+
+Si Jenkins o SonarQube estaban levantados con los Compose antiguos, deténgalos una vez antes de migrar:
+
+```bash
+docker compose -f dev-tools/jenkins/docker-compose.yml down
+docker compose -f dev-tools/sonarqube/docker-compose.yml down
+docker compose up -d
+```
 
 Para revisar el estado o detenerla sin borrar datos:
 
@@ -25,11 +41,11 @@ docker compose ps
 docker compose down
 ```
 
-No ejecute `docker compose down -v` si desea conservar la base. El volumen predeterminado es `vuln-app-wazuh_postgres_api_data`.
+No ejecute `docker compose down -v`: elimina la base de la aplicación y también los datos persistentes de Jenkins y SonarQube. `docker compose down` conserva todos los volúmenes.
 
 ## Inicio reforzado mediante scripts
 
-Los scripts crean `.env` con contraseñas, JWT y clave Fernet aleatorios. La primera ejecución muestra una sola vez la contraseña inicial del administrador.
+Los scripts crean o migran `.env` con contraseñas aleatorias para la aplicación, PostgreSQL, Jenkins y SonarQube, además del JWT y la clave Fernet. Las contraseñas nuevas se muestran una sola vez.
 
 Linux, Ubuntu o Kali:
 
@@ -81,7 +97,7 @@ Stack completo:
 ./scripts/smoke-test.sh
 ```
 
-Los pipelines de Jenkins, SonarQube, Trivy y OWASP ZAP se mantienen en `dev-tools/`.
+Jenkins carga el pipeline desde `dev-tools/jenkins/Jenkinsfile`, genera automáticamente su credencial de SonarQube y ejecuta Docker mediante el socket del host. Esta integración otorga a Jenkins control administrativo sobre Docker; úsela solo en un equipo de desarrollo controlado.
 
 ## Seguridad de configuración
 

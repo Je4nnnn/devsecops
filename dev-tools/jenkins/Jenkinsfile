@@ -133,22 +133,11 @@ EOF
                 sh '''
                     set -eu
 
-                    docker compose -f dev-tools/sonarqube/docker-compose.yml down --remove-orphans || true
+                    docker compose -f docker-compose.yml up -d db-sonar sonarqube sonar-init
 
-                    for attempt in $(seq 1 30); do
-                        if ! ss -ltn | grep -q ':9000 '; then
-                            break
-                        fi
-
-                        echo "Esperando a que el puerto 9000 quede libre (${attempt}/30)."
-                        sleep 2
-                    done
-
-                    docker compose -f dev-tools/sonarqube/docker-compose.yml up -d
-
-                    echo "Esperando a que SonarQube quede disponible en ${SONAR_SERVER_URL}..."
+                    echo "Esperando a que SonarQube del stack raiz quede disponible en ${SONAR_SERVER_URL}..."
                     for attempt in $(seq 1 60); do
-                        if docker run --rm --network=sonarqube_sonar-network curlimages/curl:8.12.1 \
+                        if docker run --rm --network=$CI_SONAR_NETWORK curlimages/curl:8.12.1 \
                             -fsS "${SONAR_SERVER_URL}/api/system/status" | grep -q '"status":"UP"'; then
                             echo "SonarQube esta listo."
                             exit 0
@@ -159,8 +148,8 @@ EOF
                     done
 
                     echo "ERROR: SonarQube no quedo listo dentro del timeout."
-                    docker compose -f dev-tools/sonarqube/docker-compose.yml ps || true
-                    docker compose -f dev-tools/sonarqube/docker-compose.yml logs --tail=120 sonarqube || true
+                    docker compose -f docker-compose.yml ps sonarqube sonar-init || true
+                    docker compose -f docker-compose.yml logs --tail=120 sonarqube sonar-init || true
                     exit 1
                 '''
             }
@@ -170,7 +159,7 @@ EOF
             steps {
                 sh '''
                     set -eu
-                    docker run --rm --network=sonarqube_sonar-network curlimages/curl:8.12.1 \
+                    docker run --rm --network=$CI_SONAR_NETWORK curlimages/curl:8.12.1 \
                         -fsS "${SONAR_SERVER_URL}/api/system/status" | grep -q '"status":"UP"'
                     echo 'GATE SonarQube Availability: OK'
                 '''
@@ -183,7 +172,7 @@ EOF
             }
             steps {
                 script {
-                    docker.image('python:3.12-alpine').inside('--network=sonarqube_sonar-network --user=root') {
+                    docker.image('python:3.12-alpine').inside("--network=${env.CI_SONAR_NETWORK} --user=root") {
                         sh '''
                             set -eu
                             python3 dev-tools/jenkins/scripts/configure_sonar_gate.py
@@ -200,7 +189,7 @@ EOF
             steps {
                 script {
                     withSonarQubeEnv('sonarqube') {
-                        docker.image('sonarsource/sonar-scanner-cli').inside('--network=sonarqube_sonar-network --user=root') {
+                        docker.image('sonarsource/sonar-scanner-cli').inside("--network=${env.CI_SONAR_NETWORK} --user=root") {
                             sh '''
                                 set -eu
                                 sonar-scanner \
@@ -222,7 +211,7 @@ EOF
             steps {
                 script {
                     timeout(time: 5, unit: 'MINUTES') {
-                        docker.image('python:3.12-alpine').inside('--network=sonarqube_sonar-network --user=root') {
+                        docker.image('python:3.12-alpine').inside("--network=${env.CI_SONAR_NETWORK} --user=root") {
                             sh '''
                                 set -eu
 
@@ -345,7 +334,10 @@ PY
             steps {
                 sh '''
                     set -eu
-                    COMPOSE_PROJECT_NAME=jenkins-security docker compose -f docker-compose.yml build --pull --no-cache api frontend
+                    COMPOSE_PROJECT_NAME=jenkins-security \
+                    API_IMAGE=jenkins-security-api:scan \
+                    FRONTEND_IMAGE=jenkins-security-frontend:scan \
+                        docker compose -f docker-compose.yml build --pull --no-cache api frontend
                 '''
             }
         }
@@ -355,8 +347,8 @@ PY
                 sh '''
                     set -eu
                     COMPOSE_PROJECT_NAME=jenkins-security \
-                    BACKEND_IMAGE=devsecops-api:entrega3-portable \
-                    FRONTEND_IMAGE=devsecops-frontend:entrega3-portable \
+                    BACKEND_IMAGE=jenkins-security-api:scan \
+                    FRONTEND_IMAGE=jenkins-security-frontend:scan \
                         ./dev-tools/jenkins/scripts/run_trivy.sh "$BUILD_NUMBER" images
                 '''
             }
@@ -415,7 +407,7 @@ EOF
                             chmod +x dev-tools/jenkins/scripts/run_zap.sh
                         '''
                         sh '''
-                            APP_PASSWORD=$(sed -n 's/^INITIAL_ADMIN_PASSWORD=//p' .env) \
+                            APP_PASSWORD="${INITIAL_ADMIN_PASSWORD:-Admin1234!}" \
                                 ./dev-tools/jenkins/scripts/run_zap.sh "$BUILD_NUMBER"
                         '''
                     }

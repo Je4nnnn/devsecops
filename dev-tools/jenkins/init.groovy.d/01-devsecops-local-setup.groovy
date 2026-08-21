@@ -48,20 +48,29 @@ try {
 
 def credentialsProvider = SystemCredentialsProvider.getInstance()
 def sonarTokenId = env.get("SONAR_TOKEN_CREDENTIAL_ID") ?: "sonar-token"
-def sonarToken = env.get("SONAR_TOKEN") ?: "replace-with-real-sonarqube-token"
-def sonarCredentialExists = credentialsProvider.getCredentials().any { it.id == sonarTokenId }
-if (!sonarCredentialExists) {
-    credentialsProvider.getCredentials().add(
-        new StringCredentialsImpl(
-            CredentialsScope.GLOBAL,
-            sonarTokenId,
-            "Token de SonarQube para el pipeline DevSecOps",
-            Secret.fromString(sonarToken)
-        )
-    )
-    credentialsProvider.save()
-    println("DevSecOps local Jenkins credential configured: ${sonarTokenId}")
+def sonarTokenFile = new File(env.get("SONAR_TOKEN_FILE") ?: "/run/sonar/token")
+def sonarToken = env.get("SONAR_TOKEN")?.trim()
+if (!sonarToken && sonarTokenFile.exists()) {
+    sonarToken = sonarTokenFile.text.trim()
 }
+if (!sonarToken) {
+    throw new IllegalStateException("No se encontro el token de SonarQube.")
+}
+
+def sonarCredential = new StringCredentialsImpl(
+    CredentialsScope.GLOBAL,
+    sonarTokenId,
+    "Token de SonarQube para el pipeline DevSecOps",
+    Secret.fromString(sonarToken)
+)
+def existingSonarCredential = credentialsProvider.getCredentials().find { it.id == sonarTokenId }
+if (existingSonarCredential == null) {
+    credentialsProvider.getCredentials().add(sonarCredential)
+} else {
+    credentialsProvider.updateCredentials(Domain.global(), existingSonarCredential, sonarCredential)
+}
+credentialsProvider.save()
+println("DevSecOps local Jenkins credential configured: ${sonarTokenId}")
 
 def sonarConfig = SonarGlobalConfiguration.get()
 def sonarInstallations = sonarConfig.getInstallations() as List
