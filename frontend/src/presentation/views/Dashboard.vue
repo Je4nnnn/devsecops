@@ -3,7 +3,7 @@
     <!-- Header Area -->
     <div class="header-actions">
       <div>
-        <h1 class="title">Panorama de Amenazas</h1>
+        <h1 class="title">Panorama de Amenazas Detectadas</h1>
         <p class="subtitle">Visualiza y gestiona el inventario de vulnerabilidades reportado por Wazuh.</p>
       </div>
       <div class="header-right">
