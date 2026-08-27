@@ -407,7 +407,12 @@ EOF
                             chmod +x dev-tools/jenkins/scripts/run_zap.sh
                         '''
                         sh '''
-                            APP_PASSWORD="${INITIAL_ADMIN_PASSWORD:-Admin1234!}" \
+                            APP_PASSWORD=$(sed -n 's/^INITIAL_ADMIN_PASSWORD=//p' .env)
+                            if [ -z "$APP_PASSWORD" ]; then
+                                echo 'INITIAL_ADMIN_PASSWORD no está definida en el .env temporal' >&2
+                                exit 1
+                            fi
+                            APP_PASSWORD="$APP_PASSWORD" \
                                 ./dev-tools/jenkins/scripts/run_zap.sh "$BUILD_NUMBER"
                         '''
                     }
