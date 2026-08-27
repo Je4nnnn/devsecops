@@ -1,6 +1,11 @@
 ARG PYTHON_IMAGE=python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df
 FROM ${PYTHON_IMAGE} AS dependencies
 
+# La base esta fijada por digest, asi que no recibe los parches que Alpine ya
+# publico para su rama (ej. openssl 3.5.8-r0 corrige CVE-2026-14456). Este
+# upgrade los aplica sin soltar el pin de la imagen base.
+RUN apk upgrade --no-cache
+
 WORKDIR /app
 
 RUN adduser -D -H -s /sbin/nologin appuser && \
