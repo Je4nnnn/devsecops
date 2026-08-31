@@ -17,7 +17,7 @@ services:
       - JENKINS_ADMIN_ID=admin
       - PIPELINE_JOB_NAME=devsecops-pipeline
       - PIPELINE_GIT_URL=https://github.com/Je4nnnn/devsecops
-      - PIPELINE_GIT_BRANCH=*/codex/entrega3-portable-qa
+      - PIPELINE_GIT_BRANCH=*/main
       - PIPELINE_SCRIPT_PATH=dev-tools/jenkins/Jenkinsfile
     networks:
       - jenkins-network

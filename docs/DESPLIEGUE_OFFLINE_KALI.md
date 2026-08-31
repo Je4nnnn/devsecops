@@ -49,7 +49,7 @@ devsecops-VERSION/
 Esta fase se ejecuta una sola vez en el repositorio, sobre la rama portable:
 
 ```bash
-git switch codex/entrega3-portable-qa
+git switch main
 git status
 docker version
 docker compose version

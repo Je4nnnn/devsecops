@@ -94,7 +94,7 @@ if (!sonarExists) {
 
 def jobName = env.get("PIPELINE_JOB_NAME") ?: "devsecops-pipeline"
 def gitUrl = env.get("PIPELINE_GIT_URL") ?: "https://github.com/Je4nnnn/devsecops"
-def gitBranch = env.get("PIPELINE_GIT_BRANCH") ?: "*/codex/entrega3-portable-qa"
+def gitBranch = env.get("PIPELINE_GIT_BRANCH") ?: "*/main"
 def scriptPath = env.get("PIPELINE_SCRIPT_PATH") ?: "dev-tools/jenkins/Jenkinsfile"
 
 def job = jenkins.getItem(jobName)

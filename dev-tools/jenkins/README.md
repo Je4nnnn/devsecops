@@ -19,7 +19,7 @@ Desde la raíz del proyecto:
 docker compose up -d
 ```
 
-El Compose raíz levanta aplicación, SonarQube y Jenkins. El inicializador genera el token `sonar-token`, Jenkins registra la instalación `sonarqube` y crea el job `devsecops-pipeline` apuntando a `codex/entrega3-portable-qa`.
+El Compose raíz levanta aplicación, SonarQube y Jenkins. El inicializador genera el token `sonar-token`, Jenkins registra la instalación `sonarqube` y crea o actualiza el job `devsecops-pipeline` apuntando a `main`.
 
 1. Abra `http://localhost:8080`.
 2. Ingrese como `admin` con la contraseña de `.env` o la credencial local documentada.
