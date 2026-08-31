@@ -26,6 +26,7 @@ coverage/
 # Artefactos y reportes locales
 offline-dist/
 reports/
+backups/
 .trivy-cache/
 *.tar
 *.tar.gz
